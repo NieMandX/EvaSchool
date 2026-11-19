@@ -222,6 +222,10 @@
 .service-status:empty { margin: 0; }
 .service-status.is-error { color: #8b3a32; }
 
+@media (min-width: 601px) and (max-width: 900px) {
+  .service-panel { width: clamp(250px, 37vw, 340px); }
+  .service-field { grid-template-columns: minmax(0, 1fr) minmax(0, 110px); gap: 4px 7px; }
+}
 @media (max-width: 600px) {
   .service-toggle,
   .service-panel { --service-edge: 8px; }
