@@ -35,7 +35,8 @@
 
 .service-panel {
   z-index: 16;
-  inset-block-start: calc(var(--service-origin) + 44px);
+  inset-inline-start: var(--service-panel-x, var(--service-edge));
+  inset-block-start: var(--service-panel-y, calc(var(--service-origin) + 44px));
   width: min(388px, calc(100vw - 2 * var(--service-edge)));
   max-block-size: min(720px, calc(100svh - var(--service-origin) - 56px));
   display: flex;
@@ -59,8 +60,19 @@
   gap: 10px;
   min-block-size: 45px;
   padding: 4px 10px 4px 15px;
+  cursor: grab;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
-.service-title { margin: 0; font-size: 17px; font-weight: 800; letter-spacing: -.025em; }
+.service-panel[data-dragging] .service-header { cursor: grabbing; }
+.service-title { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 17px; font-weight: 800; letter-spacing: -.025em; }
+.service-title::before {
+  content: '';
+  width: 10px;
+  height: 15px;
+  background: radial-gradient(circle, var(--service-muted) 1px, transparent 1.3px) 0 0 / 5px 5px;
+}
 .service-close {
   flex: none;
   display: grid;
@@ -231,7 +243,7 @@
   .service-panel { --service-edge: 8px; }
   .service-toggle { min-block-size: 35px; }
   .service-panel {
-    inset-block-start: calc(var(--service-origin) + 39px);
+    inset-block-start: var(--service-panel-y, calc(var(--service-origin) + 39px));
     width: min(350px, calc(100vw - 30px));
     max-block-size: min(47svh, calc(100svh - var(--service-origin) - 46px));
     border-radius: 14px;
