@@ -4,6 +4,7 @@ import atlas from './assets/countries.json';
 import { mapParts, viewCap, visibleParts } from './map-geometry.js';
 import { moveGlobe, wrapLongitude } from './globe-camera.js';
 import { createGlobeProjector, prepareMapPart } from './globe-projection.js';
+import { createGpuShoreShadow } from './globe-shadow-gpu.js';
 import { createOceanLabels } from './ocean-labels.js';
 
 const HOME = { lon: 87, lat: 18, zoom: 1, offsetX: 0, offsetY: 0 };
@@ -130,6 +131,12 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
   let lastTick = -Infinity;
   let lastHit = null;
   let paints;
+  let gpuShadow = null;
+  let shadowSurface = null;
+  let shoreMask = null;
+  let apertureMask = null;
+  let shoreDirty = true;
+  stage.dataset.renderer = 'canvas';
   const oceanLabels = createOceanLabels((px, py) =>
     !terrain.isPointInPath(projected.land, (px - x) / camera.zoom, (py - y) / camera.zoom));
 
@@ -278,12 +285,14 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
     terrain.translate(x, y);
     terrain.scale(camera.zoom, camera.zoom);
 
-    // Cache the land and coast relief together, independently of the water.
+    // Embed relief in this layer on Canvas 2D so a lifted country can clear it.
     terrain.save();
     terrain.fillStyle = continentColors.eurasia;
-    terrain.shadowColor = '#16384b7a';
-    terrain.shadowBlur = 8 * ratio;
-    terrain.shadowOffsetY = 3 * ratio;
+    if (!gpuShadow) {
+      terrain.shadowColor = '#16384b7a';
+      terrain.shadowBlur = 8 * ratio;
+      terrain.shadowOffsetY = 3 * ratio;
+    }
     terrain.fill(projected.land);
     terrain.restore();
 
@@ -297,6 +306,67 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
     terrain.strokeStyle = '#456672c9';
     terrain.stroke(projected.outlines);
     terrain.restore();
+  }
+
+  function makeShadowMask() {
+    const surface = document.createElement('canvas');
+    const scale = Math.min(.5, 750 / Math.max(width, height));
+    surface.width = Math.max(1, Math.round(width * scale));
+    surface.height = Math.max(1, Math.round(height * scale));
+    const context = surface.getContext('2d');
+    context.setTransform(surface.width / width, 0, 0, surface.height / height, 0, 0);
+    return context;
+  }
+
+  function disableGpuShadow() {
+    if (!gpuShadow) return;
+    const shadow = gpuShadow;
+    gpuShadow = null;
+    shadowSurface.remove();
+    shadowSurface = shoreMask = apertureMask = null;
+    stage.dataset.renderer = 'canvas';
+    shadow.dispose();
+    markCamera();
+  }
+
+  function resizeGpuShadow() {
+    if (!gpuShadow || !width || !height) return;
+    const scale = Math.min(ratio, 1);
+    if (!gpuShadow.resize(Math.round(width * scale), Math.round(height * scale), scale)) {
+      disableGpuShadow();
+      return;
+    }
+    shoreMask = makeShadowMask();
+    apertureMask = null;
+    shoreDirty = true;
+  }
+
+  function drawGpuShadow(cuts) {
+    if (shoreDirty) {
+      shoreMask.clearRect(0, 0, width, height);
+      shoreMask.save();
+      shoreMask.translate(x, y);
+      shoreMask.scale(camera.zoom, camera.zoom);
+      shoreMask.fill(projected.land);
+      shoreMask.restore();
+    }
+    if (cuts.length) {
+      apertureMask ??= makeShadowMask();
+      apertureMask.clearRect(0, 0, width, height);
+      applyTerrainCuts(apertureMask, cuts, true);
+    }
+    const rendered = gpuShadow.draw({
+      landMask: shoreDirty ? shoreMask.canvas : null,
+      cutMask: cuts.length ? apertureMask.canvas : null,
+      x, y, radius,
+    });
+    shoreDirty = false;
+    if (!rendered) {
+      disableGpuShadow();
+      drawTerrain();
+    } else if (stage.dataset.renderer !== 'webgpu') {
+      stage.dataset.renderer = 'webgpu';
+    }
   }
 
   function liftLevel(lift, time) {
@@ -372,7 +442,8 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
       + .48 * Math.exp(-5 * fraction) * Math.sin(angle);
   }
 
-  function cutRaisedTerrain(selected) {
+  function terrainCuts(selected) {
+    if (reducedMotion.matches) return [];
     const cuts = [];
     const collect = (country, level) => {
       if (level <= 0) return;
@@ -383,41 +454,44 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
     for (const [country, lift] of hoverLifts) {
       if (country.id !== highlight?.id) collect(country, lift.level);
     }
-    if (!cuts.length) return;
+    return cuts;
+  }
 
-    top.save();
-    top.translate(x, y);
-    top.scale(camera.zoom, camera.zoom);
-    top.lineCap = 'round';
-    top.lineJoin = 'round';
-    top.globalCompositeOperation = 'destination-out';
-    top.fillStyle = '#000';
-    top.strokeStyle = '#000';
+  function applyTerrainCuts(context, cuts, includeShadow) {
+    context.save();
+    context.translate(x, y);
+    context.scale(camera.zoom, camera.zoom);
+    context.lineCap = 'round';
+    context.lineJoin = 'round';
+    context.fillStyle = '#000';
+    context.strokeStyle = '#000';
 
-    // The wider cut removes the old coast shadow only on the water side.
-    if (!projected.waterMask) {
-      const edge = naturalRadius + 2;
-      const waterMask = new Path2D();
-      waterMask.rect(-edge, -edge, edge * 2, edge * 2);
-      waterMask.addPath(projected.land);
-      projected.waterMask = waterMask;
+    // The wider cut clears the original coast shadow on the water side.
+    if (includeShadow) {
+      if (!projected.waterMask) {
+        const edge = naturalRadius + 2;
+        const waterMask = new Path2D();
+        waterMask.rect(-edge, -edge, edge * 2, edge * 2);
+        waterMask.addPath(projected.land);
+        projected.waterMask = waterMask;
+      }
+      context.save();
+      context.clip(projected.waterMask, 'evenodd');
+      context.lineWidth = 26 / camera.zoom;
+      for (const { path, opacity } of cuts) {
+        context.globalAlpha = opacity;
+        context.stroke(path);
+      }
+      context.restore();
     }
-    top.save();
-    top.clip(projected.waterMask, 'evenodd');
-    top.lineWidth = 26 / camera.zoom;
+
+    context.lineWidth = 1.5 / camera.zoom;
     for (const { path, opacity } of cuts) {
-      top.globalAlpha = opacity;
-      top.stroke(path);
+      context.globalAlpha = opacity;
+      context.fill(path);
+      context.stroke(path);
     }
-    top.restore();
-
-    top.lineWidth = 1.5 / camera.zoom;
-    for (const { path, opacity } of cuts) {
-      top.globalAlpha = opacity;
-      top.fill(path);
-      top.stroke(path);
-    }
-    top.restore();
+    context.restore();
   }
 
   function tick(time, duration) {
@@ -513,6 +587,8 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
       }
     }
     if (overlayDirty || animating) {
+      const cuts = terrainCuts(selected);
+      if (gpuShadow) drawGpuShadow(cuts);
       top.clearRect(0, 0, width, height);
       top.save();
       top.resetTransform();
@@ -522,7 +598,11 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
       top.beginPath();
       top.arc(x, y, radius, 0, Math.PI * 2);
       top.clip();
-      if (!reducedMotion.matches) cutRaisedTerrain(selected);
+      if (cuts.length) {
+        top.globalCompositeOperation = 'destination-out';
+        applyTerrainCuts(top, cuts, !gpuShadow);
+        top.globalCompositeOperation = 'source-over';
+      }
       if (highlight) {
         const elevation = correct
           ? correctElevation(progress, highlight.fromElevation)
@@ -571,6 +651,7 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
       projectMap();
       drawWater();
       drawTerrain();
+      shoreDirty = true;
       cameraDirty = false;
       overlayDirty = true;
     }
@@ -617,6 +698,7 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
       surface.height = Math.round(height * ratio);
     }
     for (const ctx of [base, top, terrain]) ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    resizeGpuShadow();
     stage.style.setProperty('--globe-x', homeX + 'px');
     stage.style.setProperty('--globe-y', homeY + 'px');
     stage.style.setProperty('--map-fade-top', Math.max(8, mapTop - 12) + 'px');
@@ -907,6 +989,19 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
     markCamera();
   });
   resize();
+
+  if (navigator.gpu && new URLSearchParams(location.search).get('renderer') !== 'canvas') {
+    const surface = document.createElement('canvas');
+    surface.setAttribute('aria-hidden', 'true');
+    createGpuShoreShadow(surface, disableGpuShadow).then(shadow => {
+      if (!shadow) return;
+      gpuShadow = shadow;
+      shadowSurface = surface;
+      canvas.after(surface);
+      resizeGpuShadow();
+      markCamera();
+    });
+  }
 
   return {
     paint(id, type) {

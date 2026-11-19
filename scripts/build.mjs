@@ -14,7 +14,7 @@ const [template, css, bundled] = await Promise.all([
     minify: true,
     format: 'iife',
     charset: 'utf8',
-    target: ['safari16', 'chrome105', 'firefox110'],
+    target: ['safari15.4', 'chrome105', 'firefox110'],
     write: false,
     legalComments: 'none',
   }),
