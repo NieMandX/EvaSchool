@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
+    "build:service": "node scripts/build.mjs --service",
     "preview": "node scripts/preview.mjs",
+    "preview:service": "node scripts/preview.mjs --service",
     "test": "node --test"
   },
   "dependencies": {

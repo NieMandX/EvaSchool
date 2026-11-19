@@ -1,7 +1,32 @@
 import { createGlobe } from './globe.js';
 import { nextDeck, ROUND_LENGTH } from './questions.js';
+import { DEFAULT_SETTINGS, EASING } from './settings.js';
 
-const CORRECT_ANSWER_PAUSE = 1100;
+let settings = DEFAULT_SETTINGS;
+
+function applyScreenSettings(next, previous = {}) {
+  const style = document.documentElement.style;
+  const colors = { pageColor: '--page', textColor: '--ink', mutedColor: '--muted', successText: '--green', wrongText: '--rust' };
+  const positions = {
+    headerX: '--header-x', headerY: '--header-y', questionX: '--question-x', questionY: '--question-y',
+    controlsX: '--controls-x', controlsY: '--controls-y',
+  };
+  for (const [key, property] of Object.entries(colors)) {
+    if (next[key] !== previous[key]) style.setProperty(property, next[key]);
+  }
+  for (const [key, property] of Object.entries(positions)) {
+    if (next[key] !== previous[key]) style.setProperty(property, `${next[key]}px`);
+  }
+  if (next.questionScale !== previous.questionScale) style.setProperty('--question-scale', next.questionScale / 100);
+}
+
+export function applySettings(next) {
+  applyScreenSettings(next, settings);
+  settings = next;
+  globe.updateSettings(next);
+}
+
+applyScreenSettings(settings);
 
 const element = id => document.getElementById(id);
 const selection = element('selection');
@@ -40,6 +65,7 @@ const globe = createGlobe({
   canvas: element('globe'),
   overlay: selection,
   input: element('globe-input'),
+  settings,
   onSelect: guess,
   onZoom({ canZoomIn, canZoomOut }) {
     zoomIn.disabled = !canZoomIn;
@@ -53,10 +79,10 @@ function message(text = '', tone = '') {
   feedbackMotion = null;
   feedback.textContent = text;
   feedback.dataset.tone = tone;
-  if (text && !reducedMotion.matches && !document.hidden) {
+  if (text && settings.feedbackMs && !reducedMotion.matches && !document.hidden) {
     feedbackMotion = feedback.animate(
       [{ opacity: 0, transform: 'translateY(3px)' }, { opacity: 1, transform: 'none' }],
-      { duration: 165, easing: 'cubic-bezier(.22, .65, .3, 1)' },
+      { duration: settings.feedbackMs, easing: EASING['soft-out'] },
     );
   }
 }
@@ -89,32 +115,44 @@ function headingSnapshot(target) {
 }
 
 function transitionHeading(target, update) {
-  const animate = !reducedMotion.matches && !document.hidden;
-  const previous = animate ? headingSnapshot(target) : null;
+  const {
+    headingEnterMs, headingExitMs, headingDelayMs,
+    headingEnterOffset, headingExitOffset, headingEnterEasing, headingExitEasing,
+  } = settings;
+  const animate = !reducedMotion.matches && !document.hidden && (headingEnterMs || headingExitMs);
+  const previous = animate && headingExitMs ? headingSnapshot(target) : null;
   clearHeadingMotion();
   update();
   if (!animate) return;
 
-  let departure;
+  const motion = { target, arrival: null, departure: null, snapshot: previous?.snapshot };
+  const finish = () => {
+    if (headingMotion === motion && !motion.snapshot && motion.arrival.playState === 'finished') headingMotion = null;
+  };
   if (previous) {
     const { snapshot, opacity, transform } = previous;
     target.before(snapshot);
-    departure = snapshot.animate(
-      [{ opacity, transform }, { opacity: 0, transform: 'translateY(-3px)' }],
-      { duration: 120, easing: 'cubic-bezier(.3, 0, .55, 1)', fill: 'forwards' },
+    motion.departure = snapshot.animate(
+      [{ opacity, transform }, { opacity: 0, transform: `translateY(${-headingExitOffset}px)` }],
+      { duration: headingExitMs, easing: EASING[headingExitEasing], fill: 'forwards' },
     );
-    departure.onfinish = () => {
+    motion.departure.onfinish = () => {
       snapshot.remove();
-      if (headingMotion?.departure === departure) headingMotion.snapshot = null;
+      motion.snapshot = null;
+      finish();
     };
   }
 
-  const arrival = target.animate(
-    [{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'translateY(0)' }],
-    { duration: 185, delay: previous ? 55 : 0, easing: 'cubic-bezier(.22, .65, .3, 1)', fill: 'backwards' },
+  motion.arrival = target.animate(
+    [{ opacity: 0, transform: `translateY(${headingEnterOffset}px)` }, { opacity: 1, transform: 'translateY(0)' }],
+    { duration: headingEnterMs, delay: previous ? headingDelayMs : 0, easing: EASING[headingEnterEasing], fill: 'backwards' },
   );
-  headingMotion = { target, arrival, departure, snapshot: previous?.snapshot };
-  arrival.onfinish = () => { if (headingMotion?.arrival === arrival) headingMotion = null; };
+  headingMotion = motion;
+  motion.arrival.onfinish = finish;
+}
+
+export function previewQuestionTransition() {
+  transitionHeading(questionView, () => {});
 }
 
 function fitCountry(text) {
@@ -174,15 +212,15 @@ function resumeAnswerHold() {
 
 function startAnswerHold() {
   const step = steps[index];
-  const hold = { step, remaining: CORRECT_ANSWER_PAUSE, timer: null };
-  if (!reducedMotion.matches) {
+  const hold = { step, remaining: settings.correctPause, timer: null };
+  if (hold.remaining && !reducedMotion.matches) {
     hold.marker = document.createElement('span');
     hold.marker.className = 'progress-hold';
     step.append(hold.marker);
     step.setAttribute('data-holding', '');
     hold.animation = hold.marker.animate(
       [{ transform: 'scaleX(0)' }, { transform: 'scaleX(1)' }],
-      { duration: CORRECT_ANSWER_PAUSE, fill: 'both' },
+      { duration: hold.remaining, fill: 'both' },
     );
     hold.animation.pause();
   }

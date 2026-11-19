@@ -25,6 +25,17 @@ npm run preview
 
 При каждом обновлении `main` GitHub Actions запускает тесты, собирает HTML и публикует его на GitHub Pages. В настройках Pages источником публикации выбран GitHub Actions.
 
+## Сервисная сборка
+
+```sh
+npm run build:service
+npm run preview:service
+```
+
+Откройте `http://127.0.0.1:4388/` или `dist-service/index.html` и нажмите «Настройка». Изменения сразу видны в игре. Черновик сохраняется в текущем браузере. Набор настроек можно сохранить как JSON и открыть снова через панель. Для выпуска согласованные значения переносятся в `src/settings.js`.
+
+Команда `npm run build` собирает обычную игру в `dist/`. Именно эту папку публикует GitHub Pages.
+
 ## Данные карты
 
 Контуры взяты из Natural Earth через [World Atlas 2.0.2](https://github.com/topojson/world-atlas). Группировка суши по материкам основана на [world-countries 5.1.0](https://github.com/mledoze/countries). [Подготовленный файл карты](src/assets/countries.json) доступен под [ODbL 1.0](src/assets/World-Countries-ODbL.txt). Европа и Азия объединены в Евразию. На карте подписаны пять океанов. Лицензии также включены в собранный HTML.

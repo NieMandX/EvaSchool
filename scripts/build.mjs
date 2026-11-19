@@ -4,12 +4,15 @@ import { build } from 'esbuild';
 
 const root = new URL('../', import.meta.url);
 const file = path => new URL(path, root);
-const [template, css, bundled] = await Promise.all([
+const service = process.argv.includes('--service');
+const outputDirectory = service ? 'dist-service' : 'dist';
+const styleFiles = service ? ['src/style.css', 'src/service-panel.css'] : ['src/style.css'];
+const [template, styleSources, bundled] = await Promise.all([
   readFile(file('src/index.html'), 'utf8'),
-  readFile(file('src/style.css'), 'utf8'),
+  Promise.all(styleFiles.map(path => readFile(file(path), 'utf8'))),
   build({
     absWorkingDir: fileURLToPath(root),
-    entryPoints: ['src/app.js'],
+    entryPoints: [service ? 'src/service-entry.js' : 'src/app.js'],
     bundle: true,
     minify: true,
     format: 'iife',
@@ -20,7 +23,7 @@ const [template, css, bundled] = await Promise.all([
   }),
 ]);
 
-let styles = css;
+let styles = styleSources.join('\n');
 for (const subset of ['cyrillic', 'latin']) {
   const path = `src/assets/manrope-${subset}.woff2`;
   const font = await readFile(file(path));
@@ -41,6 +44,7 @@ const output = template
   .replace('<!-- styles -->', () => `<style>\n${styles}</style>`)
   .replace('<!-- scripts -->', () => `<script>\n${code}</script>\n<!--\n${licenses}\n-->`);
 
-await mkdir(file('dist'), { recursive: true });
-await writeFile(file('dist/index.html'), output);
-console.log(`dist/index.html · ${Math.round(Buffer.byteLength(output) / 1024)} KiB`);
+const outputPath = `${outputDirectory}/index.html`;
+await mkdir(file(outputDirectory), { recursive: true });
+await writeFile(file(outputPath), output);
+console.log(`${outputPath} · ${Math.round(Buffer.byteLength(output) / 1024)} KiB`);

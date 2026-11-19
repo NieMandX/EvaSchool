@@ -57,6 +57,10 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
   position: relative;
   z-index: 1;
   pointer-events: none;
+  transform: translateY(var(--header-y, 0px));
+}
+.masthead > * {
+  transform: translateX(clamp(calc(-1 * var(--page-inset)), var(--header-x, 0px), var(--page-inset)));
 }
 .brand { display: flex; align-items: center; gap: clamp(8px, 1.1vw, 17px); font-size: clamp(22px, 2.1vw, 34px); font-weight: 800; letter-spacing: -.045em; white-space: nowrap; }
 .brand-mark svg { width: clamp(24px, 2.6vw, 40px); height: auto; aspect-ratio: 1; stroke-width: 1.8; }
@@ -104,12 +108,13 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
 #selection[data-dragging] ~ .globe-input { cursor: grabbing; }
 .map-controls {
   position: absolute;
-  top: calc(var(--header-height) + clamp(8px, 2.45svh, 25px));
+  top: max(0px, calc(var(--header-height) + clamp(8px, 2.45svh, 25px) + var(--controls-y, 0px)));
   right: var(--page-inset);
   z-index: 1;
   display: flex;
   flex-direction: column;
   gap: clamp(0px, 1svh, 11px);
+  transform: translateX(min(var(--controls-x, 0px), calc(var(--page-inset) - 7px)));
 }
 .map-button {
   display: grid;
@@ -151,6 +156,8 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
   justify-self: center;
   padding-top: clamp(3px, 1.05svh, 11px);
   pointer-events: none;
+  --question-x-room: max(var(--page-inset), calc((100vw - 680px) / 2));
+  transform: translate(clamp(calc(-1 * var(--question-x-room)), var(--question-x, 0px), var(--question-x-room)), var(--question-y, 0px));
 }
 .prompt h1 { position: relative; margin: 0; }
 .question-view { display: block; position: relative; }
@@ -161,7 +168,7 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
 }
 .question-lead {
   display: block;
-  font-size: clamp(17px, 3.15svh, 32px);
+  font-size: calc(clamp(17px, 3.15svh, 32px) * var(--question-scale, 1));
   font-weight: 700;
   line-height: 1.18;
   letter-spacing: -.04em;
@@ -169,16 +176,17 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
 .question-lead[data-tone="correct"] { color: var(--green); }
 .country-slot {
   --country-size: clamp(42px, 9.15svh, 94px);
+  --country-render-size: calc(var(--country-size) * var(--question-scale, 1));
   display: grid;
   place-items: center;
-  min-block-size: calc(1.05 * var(--country-size));
+  min-block-size: calc(1.05 * var(--country-render-size));
   margin-top: clamp(1px, .65svh, 7px);
 }
 .country {
   grid-area: 1 / 1;
   display: block;
   max-inline-size: 100%;
-  font-size: min(var(--country-size), calc(min(680px, 100vw - 2 * var(--page-inset)) / var(--country-units, 2.98)));
+  font-size: min(var(--country-render-size), calc(min(680px, 100vw - 2 * var(--page-inset)) / var(--country-units, 2.98)));
   font-weight: 800;
   line-height: 1.05;
   letter-spacing: -.06em;
@@ -228,7 +236,7 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
   .progress-track { width: clamp(74px, 22vw, 126px); gap: 3px; }
   .progress-step { height: 3px; }
   .map-controls { right: max(6px, calc(var(--page-inset) - 7px)); }
-  .question-lead { font-size: clamp(18px, 2.5svh, 23px); }
+  .question-lead { font-size: calc(clamp(18px, 2.5svh, 23px) * var(--question-scale, 1)); }
   .country-slot { --country-size: clamp(40px, 7.5svh, 66px); }
   .button { font-size: 15px; }
 }

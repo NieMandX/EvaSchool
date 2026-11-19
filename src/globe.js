@@ -7,7 +7,6 @@ import { createGlobeProjector, prepareMapPart } from './globe-projection.js';
 import { createGpuShoreShadow } from './globe-shadow-gpu.js';
 import { createOceanLabels } from './ocean-labels.js';
 
-const HOME = { lon: 87, lat: 18, zoom: 1, offsetX: 0, offsetY: 0 };
 const MIN_ZOOM = 0.85;
 const MAX_ZOOM = 4.5;
 const MAX_PIXELS = 2_100_000;
@@ -21,13 +20,13 @@ for (const country of countries) {
 }
 const hitRegions = countries.map(country => ({ country, bounds: geoBounds(country) }));
 
-const continentColors = {
-  eurasia: '#f0efeb',
-  africa: '#ebe6e0',
-  'north-america': '#e9edf0',
-  'south-america': '#e8eae2',
-  oceania: '#e2e9e7',
-  antarctica: '#f7f7f4',
+const continentFields = {
+  eurasia: 'landEurasia',
+  africa: 'landAfrica',
+  'north-america': 'landNorthAmerica',
+  'south-america': 'landSouthAmerica',
+  oceania: 'landOceania',
+  antarctica: 'landAntarctica',
 };
 
 const preparedParts = new WeakMap();
@@ -37,8 +36,8 @@ function prepareMapGeometry(geometry) {
   return result;
 }
 
-const continents = Object.entries(continentColors).map(([id, color]) => ({
-  color, geometry: prepareMapGeometry(feature(atlas, atlas.objects[id]).geometry),
+const continents = Object.entries(continentFields).map(([id, field]) => ({
+  field, geometry: prepareMapGeometry(feature(atlas, atlas.objects[id]).geometry),
 }));
 // Shared national borders only. Coastlines are defined by the land fill and its shadow.
 const borders = prepareMapGeometry(mesh(atlas, atlas.objects.countries, (a, b) => a !== b && a.id !== b.id));
@@ -63,26 +62,37 @@ const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const pointDistance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 const easeOut = fraction => 1 - (1 - fraction) ** 3;
 const smoothStep = fraction => fraction * fraction * (3 - 2 * fraction);
-const LIFT_DURATION = 165;
-const CORRECT_DURATION = 350;
 const BORDER_TOLERANCE = 1.8;
 const BORDER_SETTLE = 65;
-const ZOOM_RESPONSE = 42;
 const PINCH_MIN_SPAN = 12;
 
 const paperFace = [[253, 252, 248], [249, 248, 243]];
-const correctFace = [[204, 225, 199], [179, 208, 172]];
 const faceColor = (paper, green, tint) =>
   `rgb(${paper.map((channel, i) => Math.round(channel + (green[i] - channel) * tint)).join(', ')})`;
+const rgbChannels = hex => [1, 3, 5].map(index => parseInt(hex.slice(index, index + 2), 16));
+const withAlpha = (hex, alpha) => hex + Math.round(clamp(alpha, 0, 255)).toString(16).padStart(2, '0');
+const homePose = ({ homeLon, homeLat, homeZoom }) => ({ lon: homeLon, lat: homeLat, zoom: homeZoom });
+
+function paintColors(settings) {
+  const shoreAlpha = Math.round(255 * settings.shoreOpacity / 100);
+  return {
+    correct: [rgbChannels(settings.correctLight), rgbChannels(settings.correctDark)],
+    grid: withAlpha('#325c6d', 255 * settings.gridOpacity / 100),
+    border: withAlpha(settings.borderColor, 255 * settings.borderOpacity / 100),
+    shore: withAlpha(settings.shoreColor, shoreAlpha),
+    gpuShore: [...rgbChannels(settings.shoreColor), shoreAlpha].map(channel => channel / 255),
+    accentAmbient: withAlpha('#153645', 92 * settings.hoverShadow / 100),
+    accentNear: withAlpha('#183740', 46 * settings.hoverShadow / 100),
+  };
+}
 
 const accents = {
   hover: '#f9f8f3',
-  correct: '#b3d0ac',
   wrong: '#e4c8bc',
   reveal: '#ecd7aa',
 };
 
-export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom }) {
+export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom, settings: initialSettings }) {
   const base = canvas.getContext('2d');
   const top = overlay.getContext('2d');
   const terrainCanvas = document.createElement('canvas');
@@ -91,7 +101,9 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
   const contourProjection = geoOrthographic().clipAngle(90).translate([0, 0]).precision(.38 / MAX_ZOOM);
   const contourPath = geoPath(contourProjection);
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
-  const camera = { ...HOME };
+  let settings = { ...initialSettings };
+  let colors = paintColors(settings);
+  const camera = { ...homePose(settings), offsetX: 0, offsetY: 0 };
   const view = { x: 0, y: 0, radius: 1 };
   const pointers = new Map();
   let width = 0;
@@ -110,6 +122,8 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
   let lastZoom = null;
   let frame = 0;
   let cameraDirty = true;
+  let waterDirty = true;
+  let terrainDirty = true;
   let overlayDirty = true;
   let zoomTarget = camera.zoom;
   let zoomAnchor = null;
@@ -200,12 +214,12 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
       .clipExtent(discFits ? null : clip);
     const projector = createGlobeProjector(lon, lat, naturalRadius);
     const land = new Path2D();
-    const faces = continents.flatMap(({ color, geometry }) => {
+    const faces = continents.flatMap(({ field, geometry }) => {
       const visible = visibleParts(geometry, coverage);
       if (!visible.geometries.length) return [];
       const path = projectParts(visible.geometries, projector);
       land.addPath(path);
-      return [{ color, path }];
+      return [{ field, path }];
     });
     const outlines = projectParts(visibleParts(borders, coverage).geometries, projector);
     projected = {
@@ -219,9 +233,9 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
 
   function updatePaints() {
     const sea = base.createRadialGradient(x - radius * .34, y - radius * .43, radius * .07, x, y, radius * 1.12);
-    sea.addColorStop(0, '#9abac6');
-    sea.addColorStop(.63, '#86aab9');
-    sea.addColorStop(1, '#6d95a6');
+    sea.addColorStop(0, settings.waterLight);
+    sea.addColorStop(.63, settings.waterMid);
+    sea.addColorStop(1, settings.waterDark);
     paints = { sea, radius, x, y };
   }
 
@@ -256,9 +270,11 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
     base.lineJoin = 'round';
     base.lineCap = 'round';
     base.lineWidth = .64 / camera.zoom;
-    base.strokeStyle = '#325c6d6b';
-    base.setLineDash([3.4 / camera.zoom, 3.3 / camera.zoom]);
-    base.stroke(projected.grid);
+    if (settings.gridOpacity) {
+      base.strokeStyle = colors.grid;
+      base.setLineDash([3.4 / camera.zoom, 3.3 / camera.zoom]);
+      base.stroke(projected.grid);
+    }
     base.restore();
     terrain.save();
     terrain.resetTransform();
@@ -287,24 +303,26 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
 
     // Embed relief in this layer on Canvas 2D so a lifted country can clear it.
     terrain.save();
-    terrain.fillStyle = continentColors.eurasia;
-    if (!gpuShadow) {
-      terrain.shadowColor = '#16384b7a';
-      terrain.shadowBlur = 8 * ratio;
-      terrain.shadowOffsetY = 3 * ratio;
+    terrain.fillStyle = settings.landEurasia;
+    if (!gpuShadow && settings.shoreOpacity) {
+      terrain.shadowColor = colors.shore;
+      terrain.shadowBlur = settings.shoreBlur * ratio;
+      terrain.shadowOffsetY = settings.shoreLift * ratio;
     }
     terrain.fill(projected.land);
     terrain.restore();
 
-    for (const { color, path } of projected.continents) {
-      terrain.fillStyle = color;
+    for (const { field, path } of projected.continents) {
+      terrain.fillStyle = settings[field];
       terrain.fill(path);
     }
-    terrain.lineCap = 'round';
-    terrain.lineJoin = 'round';
-    terrain.lineWidth = .75 / camera.zoom;
-    terrain.strokeStyle = '#456672c9';
-    terrain.stroke(projected.outlines);
+    if (settings.borderWidth && settings.borderOpacity) {
+      terrain.lineCap = 'round';
+      terrain.lineJoin = 'round';
+      terrain.lineWidth = settings.borderWidth / camera.zoom;
+      terrain.strokeStyle = colors.border;
+      terrain.stroke(projected.outlines);
+    }
     terrain.restore();
   }
 
@@ -359,6 +377,9 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
       landMask: shoreDirty ? shoreMask.canvas : null,
       cutMask: cuts.length ? apertureMask.canvas : null,
       x, y, radius,
+      lift: settings.shoreLift,
+      blur: settings.shoreBlur,
+      color: colors.gpuShore,
     });
     shoreDirty = false;
     if (!rendered) {
@@ -370,8 +391,8 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
   }
 
   function liftLevel(lift, time) {
-    if (reducedMotion.matches) return lift.to;
-    const fraction = clamp((time - lift.start) / LIFT_DURATION, 0, 1);
+    if (reducedMotion.matches || !settings.hoverDuration) return lift.to;
+    const fraction = clamp((time - lift.start) / settings.hoverDuration, 0, 1);
     return lift.from + (lift.to - lift.from) * smoothStep(fraction);
   }
 
@@ -402,8 +423,8 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
     if (still) elevation = 0;
     const screenSpan = span * camera.zoom;
     // Cap the growth in screen pixels so large countries don't cover their neighbors.
-    const growth = 1 + Math.min(.047, 6 / Math.max(1, screenSpan)) * elevation;
-    const lift = clamp(2.2 + Math.sqrt(screenSpan) * .17, 2.8, 5) * elevation;
+    const growth = 1 + Math.min(.047, 6 / Math.max(1, screenSpan)) * elevation * settings.hoverGrowth / 100;
+    const lift = clamp(2.2 + Math.sqrt(screenSpan) * .17, 2.8, 5) * elevation * settings.hoverLift / 100;
     top.save();
     top.globalAlpha = level;
     top.translate(x + centerX * camera.zoom, y + centerY * camera.zoom - lift);
@@ -414,20 +435,20 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
       top.fillStyle = '#dbe9e7';
     } else if ((type === 'hover' || type === 'correct') && bottom > topEdge) {
       const face = top.createLinearGradient(0, topEdge, 0, bottom);
-      face.addColorStop(0, faceColor(paperFace[0], correctFace[0], tint));
-      face.addColorStop(1, faceColor(paperFace[1], correctFace[1], tint));
+      face.addColorStop(0, faceColor(paperFace[0], colors.correct[0], tint));
+      face.addColorStop(1, faceColor(paperFace[1], colors.correct[1], tint));
       top.fillStyle = face;
     } else {
-      top.fillStyle = accents[type];
+      top.fillStyle = type === 'correct' ? settings.correctDark : accents[type];
     }
 
-    if (!still) {
+    if (!still && settings.hoverShadow) {
       // A wide ambient shadow lifts the silhouette. The closer shadow gives it depth.
-      top.shadowColor = '#1536455c';
+      top.shadowColor = colors.accentAmbient;
       top.shadowBlur = clamp(6.5 + Math.sqrt(screenSpan) * .26, 8, 12) * ratio;
       top.shadowOffsetY = 1.25 * elevation * ratio;
       top.fill(path);
-      top.shadowColor = '#1837402e';
+      top.shadowColor = colors.accentNear;
       top.shadowBlur = 3.6 * ratio;
       top.shadowOffsetY = 1.8 * elevation * ratio;
     }
@@ -438,8 +459,10 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
   function correctElevation(fraction, start) {
     if (fraction === 1) return 1;
     const angle = fraction * 3 * Math.PI;
-    return 1 + (start - 1) * Math.exp(-6 * fraction) * Math.cos(angle)
-      + .48 * Math.exp(-5 * fraction) * Math.sin(angle);
+    const bounce = settings.correctBounce / 100;
+    const settle = (start - 1) * Math.exp(-6 * fraction);
+    return 1 + settle * (1 + bounce * (Math.cos(angle) - 1))
+      + bounce * .48 * Math.exp(-5 * fraction) * Math.sin(angle);
   }
 
   function terrainCuts(selected) {
@@ -477,7 +500,8 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
       }
       context.save();
       context.clip(projected.waterMask, 'evenodd');
-      context.lineWidth = 26 / camera.zoom;
+      const shadowReach = settings.shoreLift + settings.shoreBlur * 1.25;
+      context.lineWidth = 2 * Math.max(13, shadowReach) / camera.zoom;
       for (const { path, opacity } of cuts) {
         context.globalAlpha = opacity;
         context.stroke(path);
@@ -485,7 +509,7 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
       context.restore();
     }
 
-    context.lineWidth = 1.5 / camera.zoom;
+    context.lineWidth = Math.max(1.5, 2 * settings.borderWidth) / camera.zoom;
     for (const { path, opacity } of cuts) {
       context.globalAlpha = opacity;
       context.fill(path);
@@ -569,8 +593,8 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
     if (pressDepth !== nextDepth) overlayDirty = true;
     pressDepth = nextDepth;
     const correct = highlight?.type === 'correct';
-    const progress = correct && !reducedMotion.matches
-      ? clamp((time - highlight.start) / CORRECT_DURATION, 0, 1)
+    const progress = correct && !reducedMotion.matches && settings.correctDuration
+      ? clamp((time - highlight.start) / settings.correctDuration, 0, 1)
       : 1;
     const selected = correct
       ? highlight.from + (1 - highlight.from) * easeOut(Math.min(1, progress / .32))
@@ -641,7 +665,9 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
       if (fraction === 1) motion = null;
       cameraDirty = true;
     } else if (camera.zoom !== zoomTarget) {
-      const remaining = (camera.zoom - zoomTarget) * Math.exp(-elapsed / ZOOM_RESPONSE);
+      const remaining = settings.zoomResponse
+        ? (camera.zoom - zoomTarget) * Math.exp(-elapsed / settings.zoomResponse)
+        : 0;
       applyZoom(Math.abs(remaining) * naturalRadius < .12 ? zoomTarget : zoomTarget + remaining);
       cameraDirty = true;
     }
@@ -649,10 +675,19 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
       updateCenter();
       updateProjection();
       projectMap();
-      drawWater();
-      drawTerrain();
       shoreDirty = true;
       cameraDirty = false;
+      overlayDirty = true;
+      waterDirty = true;
+      terrainDirty = true;
+    }
+    if (waterDirty) {
+      drawWater();
+      waterDirty = false;
+    }
+    if (terrainDirty) {
+      drawTerrain();
+      terrainDirty = false;
       overlayDirty = true;
     }
     if (lastZoom !== zoomTarget) {
@@ -674,6 +709,65 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
     schedule();
   }
 
+  function updateSettings(next) {
+    const changed = (...fields) => fields.some(field => next[field] !== settings[field]);
+    const layoutChanged = changed('globeX', 'globeY', 'globeSize');
+    const homeChanged = changed('homeLon', 'homeLat', 'homeZoom');
+    const waterChanged = changed('waterLight', 'waterMid', 'waterDark', 'gridOpacity');
+    const landChanged = changed(...Object.values(continentFields), 'borderColor', 'borderWidth', 'borderOpacity');
+    const shoreChanged = changed('shoreLift', 'shoreBlur', 'shoreOpacity', 'shoreColor');
+    const accentChanged = changed('hoverLift', 'hoverGrowth', 'hoverDuration', 'hoverShadow',
+      'correctDuration', 'correctBounce', 'correctLight', 'correctDark');
+
+    if (changed('hoverDuration', 'correctDuration')) {
+      const time = performance.now();
+      const retime = (animation, previous, duration) => {
+        if (previous === duration) return;
+        const phase = previous ? clamp((time - animation.start) / previous, 0, 1) : 1;
+        animation.start = time - phase * duration;
+      };
+      for (const lift of hoverLifts.values()) retime(lift, settings.hoverDuration, next.hoverDuration);
+      if (highlight?.type === 'correct') retime(highlight, settings.correctDuration, next.correctDuration);
+      else if (highlight) retime(highlight, settings.hoverDuration, next.hoverDuration);
+    }
+
+    settings = { ...next };
+    if (layoutChanged) updateLayout();
+    if (homeChanged) goTo(homePose(settings), 0);
+    if (waterChanged || landChanged || shoreChanged || accentChanged) {
+      colors = paintColors(settings);
+      if (waterChanged) {
+        paints = null;
+        waterDirty = true;
+      }
+      if (landChanged || (shoreChanged && !gpuShadow)) terrainDirty = true;
+      if (shoreChanged || accentChanged) overlayDirty = true;
+      schedule();
+    }
+  }
+
+  function updateLayout() {
+    const mapHeight = mapBottom - mapTop;
+    if (!width || !height || !mapHeight) return;
+    const fittedRadius = Math.max(1, Math.min(width * .457, (mapHeight - 22) / 2));
+    naturalRadius = fittedRadius * settings.globeSize / 100;
+    homeX = width / 2 + settings.globeX;
+    const freeSpace = mapHeight - 2 * fittedRadius;
+    homeY = (mapTop + mapBottom) / 2 + Math.min(34, Math.max(0, (freeSpace - 26) * .19)) - 13 + settings.globeY;
+    maxOffsetX = Math.min(width * .24, naturalRadius * 1.1);
+    maxOffsetY = Math.min(mapHeight * .29, naturalRadius * .77);
+    view.radius = naturalRadius;
+    updateCenter();
+    zoomAnchor = null;
+    if (gesture?.pinch) beginPinch();
+    stage.style.setProperty('--globe-x', homeX + 'px');
+    stage.style.setProperty('--globe-y', homeY + 'px');
+    paints = null;
+    projected = null;
+    oceanLabels.clearMetrics();
+    markCamera();
+  }
+
   function resize() {
     const rect = overlay.getBoundingClientRect();
     const region = stage.getBoundingClientRect();
@@ -681,35 +775,20 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
     height = rect.height;
     if (!width || !height || !region.height) return;
     ratio = Math.min(devicePixelRatio || 1, 2, Math.sqrt(MAX_PIXELS / (width * height)));
-    homeX = width / 2;
     mapTop = region.top - rect.top;
     mapBottom = region.bottom - rect.top;
-    naturalRadius = Math.min(width * .457, (region.height - 22) / 2);
-    const freeSpace = region.height - 2 * naturalRadius;
-    homeY = (mapTop + mapBottom) / 2 + Math.min(34, Math.max(0, (freeSpace - 26) * .19)) - 13;
-    maxOffsetX = Math.min(width * .24, naturalRadius * 1.1);
-    maxOffsetY = Math.min((mapBottom - mapTop) * .29, naturalRadius * .77);
-    view.radius = naturalRadius;
-    updateCenter();
-    zoomAnchor = null;
-    if (gesture?.pinch) beginPinch();
     for (const surface of [canvas, overlay, terrainCanvas]) {
       surface.width = Math.round(width * ratio);
       surface.height = Math.round(height * ratio);
     }
     for (const ctx of [base, top, terrain]) ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
     resizeGpuShadow();
-    stage.style.setProperty('--globe-x', homeX + 'px');
-    stage.style.setProperty('--globe-y', homeY + 'px');
     stage.style.setProperty('--map-fade-top', Math.max(8, mapTop - 12) + 'px');
     stage.style.setProperty('--map-fade-start', (mapBottom - 10) + 'px');
     stage.style.setProperty('--map-fade-end', (mapBottom + 15) + 'px');
     stage.style.setProperty('--map-input-top', Math.max(0, mapTop - 9) + 'px');
     stage.style.setProperty('--map-input-height', (mapBottom - Math.max(0, mapTop - 9)) + 'px');
-    paints = null;
-    projected = null;
-    oceanLabels.clearMetrics();
-    markCamera();
+    updateLayout();
   }
 
   function stopMotion() {
@@ -748,7 +827,7 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
     if (motion) stopMotion();
     if (!zoomAnchor || pointDistance(point, zoomAnchor.point) > .5) zoomAnchor = zoomPivot(point);
     zoomTarget = clamp(zoomTarget * factor, MIN_ZOOM, MAX_ZOOM);
-    if (reducedMotion.matches) {
+    if (reducedMotion.matches || !settings.zoomResponse) {
       applyZoom(zoomTarget);
       markCamera();
     } else {
@@ -779,20 +858,23 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
   }
 
   function coast(drag, time) {
+    if (reducedMotion.matches || drag.pinched || !settings.inertiaDuration || !settings.inertiaDistance) return;
     const age = time - drag.lastMove;
     const parallel = Math.max(.22, Math.cos(camera.lat / DEG));
     const angularSpeed = Math.hypot(drag.vLon * parallel, drag.vLat);
     const speed = angularSpeed * radius / DEG;
-    if (reducedMotion.matches || drag.pinched || age > 82 || speed < .105) return;
-    const duration = clamp(235 + speed * 45, 245, 325);
-    const travel = Math.min((duration / 3) * Math.exp(-age / 90), (.22 * DEG) / (angularSpeed * camera.zoom));
+    if (age > 82 || speed < .105) return;
+    const baseDuration = clamp(235 + speed * 45, 245, 325);
+    const maxTravel = DEG / (angularSpeed * camera.zoom);
+    const baseTravel = Math.min((baseDuration / 3) * Math.exp(-age / 90), .22 * maxTravel);
+    const travel = Math.min(baseTravel * settings.inertiaDistance / 100, .5 * maxTravel);
     goTo({
       lon: wrapLongitude(camera.lon + drag.vLon * travel),
       lat: clamp(camera.lat + drag.vLat * travel, -89, 89),
       zoom: camera.zoom,
       offsetX: camera.offsetX,
       offsetY: camera.offsetY,
-    }, duration);
+    }, baseDuration * settings.inertiaDuration / 100);
   }
 
   function pinchFrame() {
@@ -967,7 +1049,7 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
     } else if (event.key === '-') {
       zoomBy(1 / 1.22);
     } else if (event.key === 'Home') {
-      goTo(HOME, 440);
+      goTo(homePose(settings), settings.resetDuration);
     } else if (event.key === 'Enter' || event.key === ' ') {
       if (!event.repeat) select({ x: homeX, y: homeY });
     } else {
@@ -1021,6 +1103,7 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom })
     },
     zoomBy,
     goTo,
-    reset() { goTo(HOME, 440); },
+    updateSettings,
+    reset() { goTo(homePose(settings), settings.resetDuration); },
   };
 }

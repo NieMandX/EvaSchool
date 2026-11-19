@@ -6,7 +6,9 @@ struct Vertex { @builtin(position) position: vec4f, @location(0) uv: vec2f }
 }
 
 struct Kernel { step: vec2f, count: f32, center: f32, pairs: array<vec4f, 12> }
-struct Composite { viewport: vec2f, center: vec2f, radius: f32, ratio: f32, cut: f32 }
+struct Composite {
+  viewport: vec2f, center: vec2f, radius: f32, ratio: f32, cut: f32, lift: f32, color: vec4f,
+}
 @group(0) @binding(0) var source: texture_2d<f32>;
 @group(0) @binding(1) var linear: sampler;
 @group(0) @binding(2) var<uniform> kernel: Kernel;
@@ -28,16 +30,16 @@ struct Composite { viewport: vec2f, center: vec2f, radius: f32, ratio: f32, cut:
 
 @fragment fn shore(@location(0) uv: vec2f) -> @location(0) vec4f {
   let circle = clamp((scene.radius - distance(uv * scene.viewport, scene.center)) * scene.ratio + 0.5, 0.0, 1.0);
-  let dy = vec2f(0.0, 3.0 / scene.viewport.y);
-  var alpha = textureSampleLevel(source, linear, uv - dy, 0.0).r * circle * (122.0 / 255.0);
+  let dy = vec2f(0.0, scene.lift / scene.viewport.y);
+  var alpha = textureSampleLevel(source, linear, uv - dy, 0.0).r * circle * scene.color.a;
   if (scene.cut > 0.0) { alpha *= 1.0 - textureSampleLevel(cutMask, linear, uv, 0.0).a; }
-  return vec4f(vec3f(22.0, 56.0, 75.0) / 255.0 * alpha, alpha);
+  return vec4f(scene.color.rgb * alpha, alpha);
 }
 `;
 
 // WebGPU's linear sampler combines two adjacent Gaussian taps in one read.
-function gaussian(maskSize, cssSize, horizontal) {
-  const sigma = Math.max(0.25, Math.min(8, 4 * maskSize / cssSize));
+function gaussian(maskSize, cssSize, horizontal, blur) {
+  const sigma = blur > 0 ? Math.max(0.25, Math.min(8, blur * 0.5 * maskSize / cssSize)) : 0;
   const radius = Math.ceil(sigma * 3);
   const weight = distance => Math.exp(-0.5 * (distance / sigma) ** 2);
   const weights = new Float32Array(4 + 12 * 4);
@@ -57,6 +59,8 @@ function gaussian(maskSize, cssSize, horizontal) {
   return weights;
 }
 
+const defaultShadowColor = [22 / 255, 56 / 255, 75 / 255, 122 / 255];
+
 export async function createGpuShoreShadow(canvas, onFailure) {
   const gpu = navigator.gpu;
   if (!gpu) return null;
@@ -65,6 +69,7 @@ export async function createGpuShoreShadow(canvas, onFailure) {
   let ready = false;
   let width = 0, height = 0, ratio = 1;
   let cached = false;
+  let kernelBlur;
 
   function dispose() {
     if (disposed) return;
@@ -103,11 +108,11 @@ export async function createGpuShoreShadow(canvas, onFailure) {
       layout: 'auto', vertex: { module, entryPoint: 'vertex' },
       fragment: { module, entryPoint, targets: [{ format: target }] },
     });
-    const [blur, composite] = await Promise.all([pipeline('blur', 'r8unorm'), pipeline('shore', format)]);
+    const [blurPass, composite] = await Promise.all([pipeline('blur', 'r8unorm'), pipeline('shore', format)]);
     if (disposed) return null;
     device.pushErrorScope('validation');
     const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
-    uniforms = [208, 208, 32].map(size => device.createBuffer({ size, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }));
+    uniforms = [208, 208, 48].map(size => device.createBuffer({ size, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }));
     context.configure({ device, format, alphaMode: 'premultiplied' });
     const configurationError = await device.popErrorScope();
     if (configurationError || disposed) {
@@ -148,8 +153,8 @@ export async function createGpuShoreShadow(canvas, onFailure) {
       const sourceView = source.createView();
       horizontalView = horizontal.createView();
       verticalView = vertical.createView();
-      horizontalGroup = bindings(blur, sourceView, [uniform(2, uniforms[0])]);
-      verticalGroup = bindings(blur, horizontalView, [uniform(2, uniforms[1])]);
+      horizontalGroup = bindings(blurPass, sourceView, [uniform(2, uniforms[0])]);
+      verticalGroup = bindings(blurPass, horizontalView, [uniform(2, uniforms[1])]);
       openGroup = bindings(composite, verticalView, [{ binding: 3, resource: sourceView }, uniform(4, uniforms[2])]);
       cutGroup = bindings(composite, verticalView, [{ binding: 3, resource: aperture.createView() }, uniform(4, uniforms[2])]);
     }
@@ -166,23 +171,28 @@ export async function createGpuShoreShadow(canvas, onFailure) {
       return true;
     }
 
-    const scene = new Float32Array(8);
-    function draw({ landMask, cutMask, x, y, radius }) {
+    const scene = new Float32Array(12);
+    function draw({ landMask, cutMask, x, y, radius, lift = 3, blur = 8, color = defaultShadowColor }) {
       if (disposed || !width || (!landMask && !cached)) return false;
       try {
         const encoder = device.createCommandEncoder();
         if (landMask) {
           if (!source || source.width !== landMask.width || source.height !== landMask.height) allocate(landMask);
           upload(landMask, source);
-          if (!cached) {
-            device.queue.writeBuffer(uniforms[0], 0, gaussian(source.width, width / ratio, true));
-            device.queue.writeBuffer(uniforms[1], 0, gaussian(source.height, height / ratio, false));
-          }
-          pass(encoder, blur, horizontalGroup, horizontalView);
-          pass(encoder, blur, verticalGroup, verticalView);
+        }
+        const kernelChanged = !cached || kernelBlur !== blur;
+        if (kernelChanged) {
+          device.queue.writeBuffer(uniforms[0], 0, gaussian(source.width, width / ratio, true, blur));
+          device.queue.writeBuffer(uniforms[1], 0, gaussian(source.height, height / ratio, false, blur));
+          kernelBlur = blur;
+        }
+        if (landMask || kernelChanged) {
+          pass(encoder, blurPass, horizontalGroup, horizontalView);
+          pass(encoder, blurPass, verticalGroup, verticalView);
         }
         if (cutMask) upload(cutMask, aperture);
-        scene.set([width / ratio, height / ratio, x, y, radius, ratio, cutMask ? 1 : 0]);
+        scene.set([width / ratio, height / ratio, x, y, radius, ratio, cutMask ? 1 : 0, lift]);
+        scene.set(color, 8);
         device.queue.writeBuffer(uniforms[2], 0, scene);
         pass(encoder, composite, cutMask ? cutGroup : openGroup, context.getCurrentTexture().createView());
         device.queue.submit([encoder.finish()]);
