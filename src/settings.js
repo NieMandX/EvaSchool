@@ -9,8 +9,6 @@ export const DEFAULT_SETTINGS = Object.freeze({
   questionX: 0,
   questionY: 0,
   questionScale: 100,
-  controlsX: 0,
-  controlsY: 0,
 
   headingEnterMs: 185,
   headingExitMs: 120,

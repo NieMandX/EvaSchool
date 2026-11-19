@@ -1,6 +1,9 @@
 const RAD = Math.PI / 180;
 const DEG = 1 / RAD;
 const LIMB = .985;
+const RELEASE_WINDOW_MS = 60;
+const RELEASE_IDLE_MS = 100;
+const MIN_RELEASE_SPEED = .065;
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const wrapRadians = value => Math.atan2(Math.sin(value), Math.cos(value));
@@ -72,4 +75,49 @@ export function moveGlobe(camera, from, to, view) {
   const blend = grip * grip * (3 - 2 * grip);
   camera.lon = wrapLongitude(slide.lon + wrapLongitude(camera.lon - slide.lon) * blend);
   camera.lat = slide.lat + (camera.lat - slide.lat) * blend;
+}
+
+export function recordGlobeMotion(samples, camera, time) {
+  const previous = samples[samples.length - 1];
+  // Keep longitude continuous through the antimeridian so it measures the drag, not the wrap.
+  const lon = previous ? previous.lon + wrapLongitude(camera.lon - previous.lon) : camera.lon;
+  if (previous && time <= previous.time) {
+    previous.lon = lon;
+    previous.lat = camera.lat;
+    return;
+  }
+  samples.push({ lon, lat: camera.lat, time });
+  const cutoff = time - RELEASE_WINDOW_MS;
+  while (samples.length > 2 && samples[1].time <= cutoff) samples.shift();
+}
+
+export function releaseGlobeMotion(samples, camera, view, time, durationPercent, distancePercent) {
+  if (samples.length < 2 || durationPercent <= 0 || distancePercent <= 0) return null;
+  const first = samples[0];
+  const next = samples[1];
+  const last = samples[samples.length - 1];
+  const age = Math.max(0, time - last.time);
+  if (age >= RELEASE_IDLE_MS) return null;
+
+  // Interpolate the leading sample to compare the same time window at different input rates.
+  const start = Math.max(first.time, last.time - RELEASE_WINDOW_MS);
+  const fraction = (start - first.time) / (next.time - first.time);
+  const interval = last.time - start;
+  if (interval < 4) return null;
+  const attenuation = Math.exp(-age / 44) / interval;
+  const vLon = (last.lon - first.lon - (next.lon - first.lon) * fraction) * attenuation;
+  const vLat = (last.lat - first.lat - (next.lat - first.lat) * fraction) * attenuation;
+  const parallel = Math.max(.22, Math.cos(camera.lat * RAD));
+  const speed = Math.hypot(vLon * parallel, vLat) * view.radius * camera.zoom * RAD;
+  if (speed < MIN_RELEASE_SPEED) return null;
+
+  const duration = clamp(216 + 74 * Math.log1p(speed / .33), 220, 390);
+  const freeTravel = speed * (duration / 3) * (distancePercent / 100);
+  // Ease into the travel limit so stronger flicks keep their distinction from slower drags.
+  const limit = view.radius * .88;
+  const travel = -limit * Math.expm1(-freeTravel / limit) / speed;
+  const lon = wrapLongitude(camera.lon + clamp(vLon * travel, -120, 120));
+  const lat = clamp(camera.lat + vLat * travel, -89, 89);
+  if (Math.hypot(wrapLongitude(lon - camera.lon), lat - camera.lat) < .02) return null;
+  return { lon, lat, duration: duration * durationPercent / 100 };
 }

@@ -17,13 +17,11 @@ const easing = (key, label) => ({
 
 export const SETTING_GROUPS = [
   { label: 'Экран и компоновка', fields: [
-    pixels('headerX', 'Шапка по X', -120, 120),
-    pixels('headerY', 'Шапка по Y', -35, 90),
+    pixels('headerX', 'Прогресс по X', -120, 120),
+    pixels('headerY', 'Прогресс по Y', -35, 90),
     pixels('questionX', 'Вопрос по X', -160, 160),
     pixels('questionY', 'Вопрос по Y', -120, 70),
     percent('questionScale', 'Размер текста вопроса', 65, 140),
-    pixels('controlsX', 'Кнопки масштаба по X', -160, 30),
-    pixels('controlsY', 'Кнопки масштаба по Y', -65, 170),
     color('pageColor', 'Фон экрана'),
     color('textColor', 'Основной текст'),
     color('mutedColor', 'Текст подсказок'),

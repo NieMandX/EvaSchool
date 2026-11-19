@@ -9,7 +9,6 @@ function applyScreenSettings(next, previous = {}) {
   const colors = { pageColor: '--page', textColor: '--ink', mutedColor: '--muted', successText: '--green', wrongText: '--rust' };
   const positions = {
     headerX: '--header-x', headerY: '--header-y', questionX: '--question-x', questionY: '--question-y',
-    controlsX: '--controls-x', controlsY: '--controls-y',
   };
   for (const [key, property] of Object.entries(colors)) {
     if (next[key] !== previous[key]) style.setProperty(property, next[key]);
@@ -31,15 +30,13 @@ applyScreenSettings(settings);
 const element = id => document.getElementById(id);
 const selection = element('selection');
 const hintButton = element('hint');
+const hintOptions = element('hint-options');
 const skipButton = element('skip');
 const nextButton = element('primary');
-const zoomIn = element('zoom-in');
-const zoomOut = element('zoom-out');
-const progressLabel = element('progress-label');
+const progress = element('progress');
 const feedback = element('feedback');
 const questionView = element('question-view');
 const countryLabel = element('country');
-const intro = element('question-lead');
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 const titleMetrics = document.createElement('canvas').getContext('2d');
 
@@ -55,7 +52,6 @@ let deck = nextDeck();
 let index = 0;
 let results = [];
 let phase = 'question';
-let showingHint = false;
 let headingMotion = null;
 let feedbackMotion = null;
 let answerHold = null;
@@ -67,10 +63,6 @@ const globe = createGlobe({
   input: element('globe-input'),
   settings,
   onSelect: guess,
-  onZoom({ canZoomIn, canZoomOut }) {
-    zoomIn.disabled = !canZoomIn;
-    zoomOut.disabled = !canZoomOut;
-  },
 });
 
 function message(text = '', tone = '') {
@@ -163,19 +155,16 @@ function fitCountry(text) {
   countryLabel.style.setProperty('--country-units', textUnits);
 }
 
-function showHeading(lead, text, tone = '') {
-  const newCountry = text !== countryLabel.textContent;
-  if (!newCountry && lead === intro.textContent && tone === (intro.dataset.tone ?? '')) return;
-  const update = () => {
-    intro.textContent = lead;
-    intro.dataset.tone = tone;
-    if (newCountry) {
-      countryLabel.textContent = text;
-      fitCountry(text);
-    }
-  };
-  if (!newCountry && headingMotion?.target === questionView) update();
-  else transitionHeading(newCountry ? questionView : intro, update);
+function showHeading(text, tone = '') {
+  if (text === countryLabel.textContent) {
+    countryLabel.dataset.tone = tone;
+    return;
+  }
+  transitionHeading(questionView, () => {
+    countryLabel.textContent = text;
+    countryLabel.dataset.tone = tone;
+    fitCountry(text);
+  });
 }
 
 function clearAnswerCue(hold) {
@@ -241,17 +230,21 @@ document.addEventListener('visibilitychange', () => {
 });
 document.fonts.ready.then(() => fitCountry(countryLabel.textContent));
 
+function setHintOpen(open) {
+  hintButton.setAttribute('aria-expanded', String(open));
+  hintOptions.hidden = !open;
+}
+
 function showQuestion() {
   phase = 'question';
-  showingHint = false;
-  hintButton.setAttribute('aria-expanded', 'false');
-  showHeading('Найди на глобусе', deck[index].name);
-  progressLabel.textContent = `${index + 1} из ${ROUND_LENGTH}`;
+  setHintOpen(false);
+  showHeading(deck[index].name);
+  progress.setAttribute('aria-valuenow', index + 1);
+  progress.setAttribute('aria-valuetext', `Задание ${index + 1} из ${ROUND_LENGTH}`);
   steps.forEach((step, i) => {
     step.dataset.state = results[i] ?? (i === index ? 'current' : 'waiting');
   });
   hintButton.hidden = false;
-  skipButton.hidden = false;
   nextButton.hidden = true;
   message();
   globe.paint();
@@ -264,12 +257,12 @@ function guess(id) {
   if (id === question.id) {
     settle('found');
     globe.paint(id, 'correct');
-    showHeading('Верно!', question.name, 'correct');
+    showHeading(question.name, 'correct');
+    message('Верно!', 'correct');
     startAnswerHold();
   } else {
     globe.paint(id, 'wrong');
-    hintButton.setAttribute('aria-expanded', 'false');
-    showingHint = false;
+    setHintOpen(false);
     message('Пока мимо. Попробуй ещё раз.', 'wrong');
   }
 }
@@ -280,7 +273,7 @@ function settle(result) {
   played.add(deck[index].id);
   steps[index].dataset.state = result;
   hintButton.hidden = true;
-  skipButton.hidden = true;
+  setHintOpen(false);
   nextButton.hidden = result === 'found';
   nextButton.firstElementChild.textContent = index === ROUND_LENGTH - 1 ? 'Мой результат' : 'Следующее задание';
   message();
@@ -290,12 +283,12 @@ function settle(result) {
 function showSummary() {
   phase = 'summary';
   const found = results.filter(result => result === 'found').length;
-  showHeading('Твой результат', `${found} из ${ROUND_LENGTH}`);
+  showHeading(`${found} из ${ROUND_LENGTH}`);
   nextButton.hidden = false;
   nextButton.firstElementChild.textContent = 'Сыграть ещё';
-  progressLabel.textContent = `${ROUND_LENGTH} из ${ROUND_LENGTH}`;
+  progress.setAttribute('aria-valuetext', 'Раунд завершён');
   globe.paint();
-  message();
+  message('Твой результат');
 }
 
 function advanceAnswer() {
@@ -310,19 +303,19 @@ function advanceAnswer() {
 }
 
 hintButton.addEventListener('click', () => {
-  showingHint = !showingHint;
-  hintButton.setAttribute('aria-expanded', String(showingHint));
+  const open = hintOptions.hidden;
+  setHintOpen(open);
   globe.paint();
-  message(showingHint ? deck[index].hint : '');
+  message(open ? deck[index].hint : '');
 });
 
 skipButton.addEventListener('click', () => {
   const keyboard = skipButton.matches(':focus-visible');
   const question = deck[index];
   settle('skipped');
-  showHeading('Правильный ответ', question.name);
   globe.paint(question.id, 'reveal');
   globe.goTo({ lon: question.lon, lat: question.lat, zoom: 1.05 });
+  message('Правильный ответ');
   if (keyboard) nextButton.focus();
 });
 
@@ -338,10 +331,6 @@ nextButton.addEventListener('click', () => {
   }
   if (keyboard && phase === 'question') selection.focus();
 });
-
-zoomIn.addEventListener('click', () => globe.zoomBy(1.25));
-zoomOut.addEventListener('click', () => globe.zoomBy(1 / 1.25));
-element('reset').addEventListener('click', globe.reset);
 
 fitCountry(countryLabel.textContent);
 showQuestion();

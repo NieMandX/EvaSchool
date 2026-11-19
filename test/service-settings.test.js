@@ -12,7 +12,7 @@ test('each preset field has a default and can be exported and restored', () => {
 test('partial presets use defaults and keep numeric values within supported ranges', () => {
   const decoded = decodePreset(JSON.stringify({
     version: 1,
-    settings: { shoreBlur: 90, shoreLift: 0, zoomResponse: -1, pageColor: '#ABCDEF', futureField: 1 },
+    settings: { shoreBlur: 90, shoreLift: 0, zoomResponse: -1, pageColor: '#ABCDEF', controlsX: 20, controlsY: 30 },
   }));
   assert.deepEqual(decoded, { ...DEFAULT_SETTINGS, shoreBlur: 24, shoreLift: 0, zoomResponse: 0, pageColor: '#abcdef' });
 });

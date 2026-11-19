@@ -160,18 +160,13 @@ function searchText(text) {
 }
 
 export function mountServicePanel({ groups, defaults, applySettings, decodePreset, encodePreset, previewTransition }) {
-  const toggle = button('Настройка', 'service-toggle');
-  toggle.id = 'service-toggle';
-  toggle.prepend(icon('M4 7h6m4 0h6M4 17h9m4 0h3M10 5v4m4 6v4'));
-  toggle.setAttribute('aria-controls', 'service-panel');
-  toggle.setAttribute('aria-expanded', 'false');
-
   const panel = element('section', 'service-panel');
   panel.id = 'service-panel';
   panel.hidden = true;
   panel.setAttribute('role', 'dialog');
   panel.setAttribute('aria-modal', 'false');
   panel.setAttribute('aria-labelledby', 'service-title');
+  panel.setAttribute('aria-keyshortcuts', 'N Escape');
 
   const header = element('header', 'service-header');
   header.title = 'Перетащить окно настроек';
@@ -223,6 +218,7 @@ export function mountServicePanel({ groups, defaults, applySettings, decodePrese
   let importRevision = 0;
   let panelPosition = null;
   let panelDrag = null;
+  let previousFocus = null;
   const fields = new Map();
 
   function announce(text, error = false) {
@@ -435,27 +431,34 @@ export function mountServicePanel({ groups, defaults, applySettings, decodePrese
 
   function openPanel(open) {
     const restoreFocus = !open && panel.contains(document.activeElement);
-    if (!open) endPanelDrag();
+    if (open) previousFocus = document.activeElement;
+    else endPanelDrag();
     panel.hidden = !open;
-    toggle.setAttribute('aria-expanded', String(open));
     if (open) {
       keepPanelVisible();
       close.focus({ preventScroll: true });
     }
-    if (restoreFocus) toggle.focus({ preventScroll: true });
+    if (restoreFocus && previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
   }
 
-  toggle.addEventListener('click', () => openPanel(panel.hidden));
   close.addEventListener('click', () => openPanel(false));
   document.addEventListener('keydown', event => {
-    if (!panel.hidden && event.key === 'Escape' && !event.defaultPrevented) {
+    if (event.defaultPrevented || event.isComposing) return;
+    if (!panel.hidden && event.key === 'Escape') {
       event.preventDefault();
       openPanel(false);
+      return;
     }
+    const isN = event.code === 'KeyN' || event.key.toLowerCase() === 'n';
+    if (!isN || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
+    const target = event.target;
+    if (target instanceof Element && (target.closest('input, textarea, select') || target.isContentEditable)) return;
+    event.preventDefault();
+    openPanel(panel.hidden);
   });
   window.addEventListener('pagehide', () => {
     if (saveTimer !== null) save();
   });
 
-  document.body.append(toggle, panel);
+  document.body.append(panel);
 }

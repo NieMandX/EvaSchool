@@ -24,7 +24,7 @@
   --green: #275d45;
   --rust: #803f30;
   --page-inset: clamp(16px, 3.5vw, 58px);
-  --header-height: clamp(52px, 7.2svh, 75px);
+  --header-height: clamp(42px, 6svh, 60px);
   --prompt-height: clamp(188px, calc(85px + 17.7svh), 272px);
   font-family: Manrope, system-ui, sans-serif;
   color: var(--ink);
@@ -50,25 +50,26 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
 .masthead {
   height: var(--header-height);
   display: flex;
-  justify-content: space-between;
+  justify-content: center;
   align-items: center;
-  gap: 14px;
   padding-inline: var(--page-inset);
   position: relative;
   z-index: 1;
   pointer-events: none;
   transform: translateY(var(--header-y, 0px));
 }
-.masthead > * {
+.progress {
   transform: translateX(clamp(calc(-1 * var(--page-inset)), var(--header-x, 0px), var(--page-inset)));
 }
-.brand { display: flex; align-items: center; gap: clamp(8px, 1.1vw, 17px); font-size: clamp(22px, 2.1vw, 34px); font-weight: 800; letter-spacing: -.045em; white-space: nowrap; }
-.brand-mark svg { width: clamp(24px, 2.6vw, 40px); height: auto; aspect-ratio: 1; stroke-width: 1.8; }
-.map-credit { pointer-events: auto; color: inherit; font-size: 11px; font-weight: 650; letter-spacing: 0; text-underline-offset: 2px; }
-.progress { display: flex; align-items: center; gap: clamp(12px, 1.7vw, 27px); white-space: nowrap; }
-#progress-label { font-size: clamp(14px, 1.48vw, 22px); font-weight: 750; font-variant-numeric: tabular-nums; }
-.progress-track { display: grid; grid-template-columns: repeat(10, 1fr); gap: clamp(4px, .47vw, 7px); width: clamp(92px, 21.8vw, 335px); }
-.progress-step { position: relative; overflow: hidden; height: 4px; border-radius: 4px; background: var(--line); }
+.progress-track { display: flex; gap: clamp(7px, 1.05vw, 14px); }
+.progress-step {
+  position: relative;
+  overflow: hidden;
+  width: clamp(7px, .88vw, 11px);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: var(--line);
+}
 .progress-step[data-state="current"] { background: var(--ochre); }
 .progress-step[data-state="found"] { background: var(--green); }
 .progress-step[data-state="skipped"] { opacity: .55; }
@@ -106,31 +107,6 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
 }
 #selection[data-country] ~ .globe-input { cursor: pointer; }
 #selection[data-dragging] ~ .globe-input { cursor: grabbing; }
-.map-controls {
-  position: absolute;
-  top: max(0px, calc(var(--header-height) + clamp(8px, 2.45svh, 25px) + var(--controls-y, 0px)));
-  right: var(--page-inset);
-  z-index: 1;
-  display: flex;
-  flex-direction: column;
-  gap: clamp(0px, 1svh, 11px);
-  transform: translateX(min(var(--controls-x, 0px), calc(var(--page-inset) - 7px)));
-}
-.map-button {
-  display: grid;
-  place-items: center;
-  width: clamp(44px, 3.55vw, 55px);
-  height: clamp(44px, 3.55vw, 55px);
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  padding: 0;
-  transition: background-color .15s ease, transform .17s cubic-bezier(.2, .7, .35, 1);
-}
-.map-button svg { width: clamp(22px, 2.3vw, 35px); height: auto; aspect-ratio: 1; stroke-width: 1.8; }
-.map-button:hover:not(:disabled), .button:hover { background-color: #102e3b0d; }
-.map-button:active:not(:disabled), .button:active { transform: scale(.95); }
-.map-button:disabled { opacity: .42; }
 .crosshair {
   position: absolute;
   display: none;
@@ -166,14 +142,6 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
   inset: 0 0 auto;
   pointer-events: none;
 }
-.question-lead {
-  display: block;
-  font-size: calc(clamp(17px, 3.15svh, 32px) * var(--question-scale, 1));
-  font-weight: 700;
-  line-height: 1.18;
-  letter-spacing: -.04em;
-}
-.question-lead[data-tone="correct"] { color: var(--green); }
 .country-slot {
   --country-size: clamp(42px, 9.15svh, 94px);
   --country-render-size: calc(var(--country-size) * var(--question-scale, 1));
@@ -191,14 +159,15 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
   line-height: 1.05;
   letter-spacing: -.06em;
   white-space: nowrap;
+  transition: color .16s ease-out;
 }
+.country[data-tone="correct"] { color: var(--green); }
 .actions {
   display: flex;
   min-block-size: 44px;
   align-items: center;
   justify-content: center;
-  gap: clamp(12px, 3vw, 47px);
-  margin-top: clamp(5px, 1.55svh, 16px);
+  margin-top: clamp(4px, .8svh, 8px);
 }
 .button {
   min-height: 44px;
@@ -217,8 +186,8 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
   transition: background-color .15s ease, transform .18s cubic-bezier(.2, .7, .35, 1);
 }
 .button:active { transform: scale(.975); transition-duration: 80ms; }
+.button:hover { background: #102e3b0d; }
 .button svg { width: clamp(20px, 2.9svh, 30px); height: auto; aspect-ratio: 1; flex: none; }
-#hint svg { width: clamp(21px, 3.4svh, 35px); }
 .button[aria-expanded="true"] { background: #102e3b12; }
 .feedback {
   min-block-size: 2.7em;
@@ -230,19 +199,30 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
   line-height: 1.35;
 }
 .feedback[data-tone="wrong"] { color: var(--rust); }
+.feedback[data-tone="correct"] { color: var(--green); }
+.hint-options { display: flex; justify-content: center; gap: clamp(12px, 3vw, 24px); flex-wrap: wrap; }
+.hint-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  pointer-events: auto;
+}
 
 @media (max-width: 600px) {
   :root { --prompt-height: clamp(192px, calc(26svh + 8px), 240px); }
-  .progress-track { width: clamp(74px, 22vw, 126px); gap: 3px; }
-  .progress-step { height: 3px; }
-  .map-controls { right: max(6px, calc(var(--page-inset) - 7px)); }
-  .question-lead { font-size: calc(clamp(18px, 2.5svh, 23px) * var(--question-scale, 1)); }
   .country-slot { --country-size: clamp(40px, 7.5svh, 66px); }
   .button { font-size: 15px; }
 }
 @media (max-width: 350px) {
   :root { --prompt-height: clamp(202px, calc(100px + 15svh), 250px); }
-  .progress-track { width: 52px; }
   .feedback { min-block-size: 4.05em; }
 }
 @media (max-height: 480px) and (min-width: 600px) {
@@ -250,6 +230,6 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
   .country-slot { --country-size: 37px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .button, .map-button { transition: none; }
-  .map-button:active:not(:disabled), .button:active { transform: none; }
+  .button, .country { transition: none; }
+  .button:active { transform: none; }
 }

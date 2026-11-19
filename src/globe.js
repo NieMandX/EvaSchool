@@ -2,7 +2,7 @@ import { geoBounds, geoContains, geoDistance, geoGraticule, geoOrthographic, geo
 import { feature, mesh } from 'topojson-client';
 import atlas from './assets/countries.json';
 import { mapParts, viewCap, visibleParts } from './map-geometry.js';
-import { moveGlobe, wrapLongitude } from './globe-camera.js';
+import { moveGlobe, recordGlobeMotion, releaseGlobeMotion, wrapLongitude } from './globe-camera.js';
 import { createGlobeProjector, prepareMapPart } from './globe-projection.js';
 import { createGpuShoreShadow } from './globe-shadow-gpu.js';
 import { createOceanLabels } from './ocean-labels.js';
@@ -92,7 +92,7 @@ const accents = {
   reveal: '#ecd7aa',
 };
 
-export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom, settings: initialSettings }) {
+export function createGlobe({ stage, canvas, overlay, input, onSelect, settings: initialSettings }) {
   const base = canvas.getContext('2d');
   const top = overlay.getContext('2d');
   const terrainCanvas = document.createElement('canvas');
@@ -119,7 +119,6 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom, s
   let naturalRadius = 1;
   let mapTop = 0;
   let mapBottom = 0;
-  let lastZoom = null;
   let frame = 0;
   let cameraDirty = true;
   let waterDirty = true;
@@ -690,10 +689,6 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom, s
       terrainDirty = false;
       overlayDirty = true;
     }
-    if (lastZoom !== zoomTarget) {
-      onZoom({ canZoomIn: zoomTarget < MAX_ZOOM, canZoomOut: zoomTarget > MIN_ZOOM });
-      lastZoom = zoomTarget;
-    }
     const moving = Boolean(motion || camera.zoom !== zoomTarget);
     const accentMoving = drawSelection(time, moving, elapsed);
     if (moving || accentMoving) schedule();
@@ -858,23 +853,10 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom, s
   }
 
   function coast(drag, time) {
-    if (reducedMotion.matches || drag.pinched || !settings.inertiaDuration || !settings.inertiaDistance) return;
-    const age = time - drag.lastMove;
-    const parallel = Math.max(.22, Math.cos(camera.lat / DEG));
-    const angularSpeed = Math.hypot(drag.vLon * parallel, drag.vLat);
-    const speed = angularSpeed * radius / DEG;
-    if (age > 82 || speed < .105) return;
-    const baseDuration = clamp(235 + speed * 45, 245, 325);
-    const maxTravel = DEG / (angularSpeed * camera.zoom);
-    const baseTravel = Math.min((baseDuration / 3) * Math.exp(-age / 90), .22 * maxTravel);
-    const travel = Math.min(baseTravel * settings.inertiaDistance / 100, .5 * maxTravel);
-    goTo({
-      lon: wrapLongitude(camera.lon + drag.vLon * travel),
-      lat: clamp(camera.lat + drag.vLat * travel, -89, 89),
-      zoom: camera.zoom,
-      offsetX: camera.offsetX,
-      offsetY: camera.offsetY,
-    }, baseDuration * settings.inertiaDuration / 100);
+    if (reducedMotion.matches || drag.pinched) return;
+    const release = releaseGlobeMotion(drag.samples, camera, view, time,
+      settings.inertiaDuration, settings.inertiaDistance);
+    if (release) goTo({ ...camera, lon: release.lon, lat: release.lat }, release.duration);
   }
 
   function pinchFrame() {
@@ -919,12 +901,9 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom, s
     const beforeLon = camera.lon;
     const beforeLat = camera.lat;
     moveGlobe(camera, prior, point, view);
-    const interval = Math.max(5, time - gesture.lastMove);
-    const blend = 1 - Math.exp(-interval / 29);
-    gesture.vLon += (wrapLongitude(camera.lon - beforeLon) / interval - gesture.vLon) * blend;
-    gesture.vLat += ((camera.lat - beforeLat) / interval - gesture.vLat) * blend;
-    gesture.lastMove = time;
-    if (beforeLon !== camera.lon || beforeLat !== camera.lat) markCamera();
+    if (beforeLon === camera.lon && beforeLat === camera.lat) return;
+    if (!gesture.pinched) recordGlobeMotion(gesture.samples, camera, time);
+    markCamera();
   }
 
   function select(point) {
@@ -943,11 +922,18 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom, s
   };
 
   input.addEventListener('pointerdown', event => {
-    if (event.button !== 0 || pointers.size >= 2) return;
+    if (event.button !== 0) return;
+    if (pointers.has(event.pointerId)) finishPointer(event);
+    if (pointers.size >= 2) return;
     const point = eventPoint(event);
     if (!pointers.size && (point.y < mapTop - 9 || point.y > mapBottom || pointDistance(point, { x, y }) > radius)) return;
     if (event.pointerType !== 'touch') overlay.focus({ preventScroll: true });
-    input.setPointerCapture(event.pointerId);
+    try {
+      input.setPointerCapture(event.pointerId);
+    } catch (error) {
+      // Window-level handlers still track the gesture if the native pointer is unavailable.
+      if (error.name !== 'NotFoundError') throw error;
+    }
     stopMotion();
     keyboard = false;
     pointer = null;
@@ -956,8 +942,9 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom, s
       gesture = {
         start: point, dragged: false, pinched: false, pinch: null,
         threshold: event.pointerType === 'touch' ? 6 : 4,
-        lastMove: event.timeStamp, vLon: 0, vLat: 0,
+        samples: [],
       };
+      recordGlobeMotion(gesture.samples, camera, event.timeStamp);
     } else {
       gesture.dragged = true;
       gesture.pinched = true;
@@ -969,17 +956,21 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom, s
   });
 
   input.addEventListener('pointermove', event => {
-    if (!pointers.has(event.pointerId)) {
-      if (!gesture && event.pointerType !== 'touch') {
-        keyboard = false;
-        const point = eventPoint(event);
-        pointerMoved ||= !pointer || pointDistance(point, pointer) >= .35;
-        pointer = point;
-        schedule();
-      }
+    if (gesture || event.pointerType === 'touch') return;
+    keyboard = false;
+    const point = eventPoint(event);
+    pointerMoved ||= !pointer || pointDistance(point, pointer) >= .35;
+    pointer = point;
+    schedule();
+  });
+
+  function movePointer(event) {
+    const previous = pointers.get(event.pointerId);
+    if (!previous) return;
+    if (event.pointerType === 'mouse' && !(event.buttons & 1)) {
+      finishPointer(event);
       return;
     }
-    const previous = pointers.get(event.pointerId);
     const point = eventPoint(event);
     pointers.set(event.pointerId, point);
     if (pointers.size === 2) {
@@ -994,37 +985,53 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom, s
       overlay.setAttribute('data-dragging', '');
       dragGlobe(point, gesture.start, event.timeStamp);
     }
-  });
+  }
 
   function finishPointer(event) {
-    if (!pointers.has(event.pointerId)) return;
+    const previous = pointers.get(event.pointerId);
+    if (!previous) return;
     updatePinch();
     pointers.delete(event.pointerId);
     if (pointers.size) {
       // The remaining finger continues from its actual position and cannot tap.
       gesture.pinch = null;
-      gesture.vLon = 0;
-      gesture.vLat = 0;
-      gesture.lastMove = event.timeStamp;
       schedule();
       return;
     }
     const point = eventPoint(event);
     const drag = gesture;
+    const released = event.type === 'pointerup';
+    const overInput = released && input.contains(document.elementFromPoint(event.clientX, event.clientY));
+    if (released && drag.dragged && pointDistance(point, previous) > .01) {
+      dragGlobe(point, previous, event.timeStamp);
+    }
     gesture = null;
     overlay.removeAttribute('data-dragging');
-    pointer = event.pointerType === 'touch' ? null : point;
-    if (event.type === 'pointerup') {
+    pointer = event.pointerType !== 'touch' && overInput ? point : null;
+    if (released) {
       if (drag.dragged) coast(drag, event.timeStamp);
-      else if (pointDistance(point, drag.start) < drag.threshold) select(point);
+      else if (overInput && pointDistance(point, drag.start) < drag.threshold) select(point);
     }
     overlayDirty = true;
     schedule();
   }
 
-  input.addEventListener('pointerup', finishPointer);
-  input.addEventListener('pointercancel', finishPointer);
-  input.addEventListener('lostpointercapture', finishPointer);
+  // Capture keeps native delivery reliable. Window listeners also continue tracking
+  // known pointers when a browser drops capture while a button is still down.
+  window.addEventListener('pointermove', movePointer, true);
+  window.addEventListener('pointerup', finishPointer, true);
+  window.addEventListener('pointercancel', finishPointer, true);
+  window.addEventListener('blur', () => {
+    pointers.clear();
+    gesture = null;
+    pinchDirty = false;
+    pointer = null;
+    pointerMoved = false;
+    keyboard = false;
+    overlay.removeAttribute('data-dragging');
+    overlayDirty = true;
+    schedule();
+  });
   input.addEventListener('pointerleave', () => { pointer = null; pointerMoved = false; schedule(); });
   input.addEventListener('wheel', event => {
     const point = eventPoint(event);
@@ -1101,9 +1108,7 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, onZoom, s
       pointer = null;
       schedule();
     },
-    zoomBy,
     goTo,
     updateSettings,
-    reset() { goTo(homePose(settings), settings.resetDuration); },
   };
 }
