@@ -2,9 +2,13 @@ import { geoBounds, geoContains, geoDistance, geoGraticule, geoOrthographic, geo
 import { feature, mesh } from 'topojson-client';
 import atlas from './assets/countries.json';
 import { mapParts, viewCap, visibleParts } from './map-geometry.js';
-import { moveGlobe, recordGlobeMotion, releaseGlobeMotion, wrapLongitude } from './globe-camera.js';
-import { createGlobeProjector, prepareMapPart } from './globe-projection.js';
-import { createGpuShoreShadow } from './globe-shadow-gpu.js';
+import {
+  anchorGlobe, globeCoordinates, globePoint, moveGlobe, projectGlobePoint,
+  recordGlobeMotion, releaseGlobeMotion, wrapLongitude,
+} from './globe-camera.js';
+import { boundPath, createGlobeProjector, prepareMapPart } from './globe-projection.js';
+import { createGlobeRenderer } from './globe-renderer.js';
+import { createGlobeTiles } from './globe-tiles.js';
 import { createOceanLabels } from './ocean-labels.js';
 
 const MIN_ZOOM = 0.85;
@@ -80,7 +84,7 @@ function paintColors(settings) {
     grid: withAlpha('#325c6d', 255 * settings.gridOpacity / 100),
     border: withAlpha(settings.borderColor, 255 * settings.borderOpacity / 100),
     shore: withAlpha(settings.shoreColor, shoreAlpha),
-    gpuShore: [...rgbChannels(settings.shoreColor), shoreAlpha].map(channel => channel / 255),
+    acceleratedShore: [...rgbChannels(settings.shoreColor), shoreAlpha].map(channel => channel / 255),
     accentAmbient: withAlpha('#153645', 92 * settings.hoverShadow / 100),
     accentNear: withAlpha('#183740', 46 * settings.hoverShadow / 100),
   };
@@ -92,14 +96,16 @@ const accents = {
   reveal: '#ecd7aa',
 };
 
-export function createGlobe({ stage, canvas, overlay, input, onSelect, settings: initialSettings }) {
+export function createGlobe({ stage, canvas, overlay, input, onSelect, settings: initialSettings, tileSource }) {
   const base = canvas.getContext('2d');
   const top = overlay.getContext('2d');
   const terrainCanvas = document.createElement('canvas');
   const terrain = terrainCanvas.getContext('2d');
   const projection = geoOrthographic().clipAngle(90);
+  const maxZoom = clamp(tileSource?.maxCameraZoom ?? MAX_ZOOM, MAX_ZOOM, 2 ** 20);
   const contourProjection = geoOrthographic().clipAngle(90).translate([0, 0]).precision(.38 / MAX_ZOOM);
   const contourPath = geoPath(contourProjection);
+  const detailPath = tileSource && geoPath(projection.precision(.35));
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
   let settings = { ...initialSettings };
   let colors = paintColors(settings);
@@ -144,12 +150,27 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
   let lastTick = -Infinity;
   let lastHit = null;
   let paints;
-  let gpuShadow = null;
-  let shadowSurface = null;
   let shoreMask = null;
   let apertureMask = null;
   let shoreDirty = true;
+  let frameObserver = null;
+  let detail = null;
+  const tiles = tileSource && createGlobeTiles({
+    ...tileSource,
+    onChange(entries) {
+      if (detail?.entries === entries) return;
+      terrainDirty = true;
+      schedule();
+    },
+  });
   stage.dataset.renderer = 'canvas';
+  const renderer = createGlobeRenderer(canvas, name => {
+    stage.dataset.renderer = name;
+    shoreMask = apertureMask = null;
+    resizeShadow();
+    terrainDirty = overlayDirty = true;
+    schedule();
+  });
   const oceanLabels = createOceanLabels((px, py) =>
     !terrain.isPointInPath(projected.land, (px - x) / camera.zoom, (py - y) / camera.zoom));
 
@@ -162,8 +183,8 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
 
   function countryAt(point) {
     if (point.y < mapTop - 9 || point.y > mapBottom) return null;
-    if ((point.x - x) ** 2 + (point.y - y) ** 2 >= radius ** 2) return null;
-    const coordinates = projection.invert([point.x, point.y]);
+    const coordinates = globeCoordinates(camera, point, view);
+    if (!coordinates) return null;
     const [lon, lat] = coordinates;
     for (const { country, bounds: [[west, south], [east, north]] } of hitRegions) {
       if (lat < south || lat > north) continue;
@@ -185,8 +206,7 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
     return path;
   }
 
-  function projectParts(shapes, projector) {
-    const path = new Path2D();
+  function projectParts(shapes, projector, path = new Path2D()) {
     for (const shape of shapes) {
       if (!projector.append(path, preparedParts.get(shape))) contourPath.context(path)(shape);
     }
@@ -303,7 +323,7 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
     // Embed relief in this layer on Canvas 2D so a lifted country can clear it.
     terrain.save();
     terrain.fillStyle = settings.landEurasia;
-    if (!gpuShadow && settings.shoreOpacity) {
+    if (!renderer.active && settings.shoreOpacity) {
       terrain.shadowColor = colors.shore;
       terrain.shadowBlur = settings.shoreBlur * ratio;
       terrain.shadowOffsetY = settings.shoreLift * ratio;
@@ -323,6 +343,26 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
       terrain.stroke(projected.outlines);
     }
     terrain.restore();
+    if (tiles) drawDetail();
+  }
+
+  function drawDetail() {
+    const entries = tiles.visible();
+    if (!entries.length) return;
+    if (detail?.entries !== entries) {
+      const path = new Path2D();
+      detailPath.context(path);
+      for (const { data } of entries) {
+        if (data) detailPath(data);
+      }
+      detail = { entries, path };
+    }
+    terrain.save();
+    terrain.lineCap = terrain.lineJoin = 'round';
+    terrain.lineWidth = 1;
+    terrain.strokeStyle = colors.border;
+    terrain.stroke(detail.path);
+    terrain.restore();
   }
 
   function makeShadowMask() {
@@ -335,22 +375,12 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
     return context;
   }
 
-  function disableGpuShadow() {
-    if (!gpuShadow) return;
-    const shadow = gpuShadow;
-    gpuShadow = null;
-    shadowSurface.remove();
-    shadowSurface = shoreMask = apertureMask = null;
-    stage.dataset.renderer = 'canvas';
-    shadow.dispose();
-    markCamera();
-  }
-
-  function resizeGpuShadow() {
-    if (!gpuShadow || !width || !height) return;
+  function resizeShadow() {
+    const active = renderer.active;
+    if (!active || !width || !height) return;
     const scale = Math.min(ratio, 1);
-    if (!gpuShadow.resize(Math.round(width * scale), Math.round(height * scale), scale)) {
-      disableGpuShadow();
+    if (!active.driver.resize(Math.round(width * scale), Math.round(height * scale), scale)) {
+      active.fail();
       return;
     }
     shoreMask = makeShadowMask();
@@ -358,7 +388,7 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
     shoreDirty = true;
   }
 
-  function drawGpuShadow(cuts) {
+  function drawAcceleratedShadow(active, cuts) {
     if (shoreDirty) {
       shoreMask.clearRect(0, 0, width, height);
       shoreMask.save();
@@ -372,20 +402,18 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
       apertureMask.clearRect(0, 0, width, height);
       applyTerrainCuts(apertureMask, cuts, true);
     }
-    const rendered = gpuShadow.draw({
+    const rendered = active.driver.draw({
       landMask: shoreDirty ? shoreMask.canvas : null,
       cutMask: cuts.length ? apertureMask.canvas : null,
       x, y, radius,
       lift: settings.shoreLift,
       blur: settings.shoreBlur,
-      color: colors.gpuShore,
+      color: colors.acceleratedShore,
     });
     shoreDirty = false;
     if (!rendered) {
-      disableGpuShadow();
+      active.fail();
       drawTerrain();
-    } else if (stage.dataset.renderer !== 'webgpu') {
-      stage.dataset.renderer = 'webgpu';
     }
   }
 
@@ -398,12 +426,20 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
   function countrySilhouette(country) {
     let silhouette = accentPaths.get(country);
     if (!silhouette) {
-      const [[left, topEdge], [right, bottom]] = contourPath.bounds(country);
+      const path = new Path2D();
+      const bounded = boundPath(path);
+      projectParts(countryPolygons(country), projected.projector, bounded);
+      const { left, top: topEdge, right, bottom } = bounded.bounds;
       if (!Number.isFinite(right)) return;
+      const centerX = (left + right) / 2;
+      const centerY = (topEdge + bottom) / 2;
+      // On an orthographic sphere these are the screen components of its unit normal.
+      const normalLength = Math.max(naturalRadius, Math.hypot(centerX, centerY));
       silhouette = {
-        path: projectParts(countryPolygons(country), projected.projector),
-        centerX: (left + right) / 2,
-        centerY: (topEdge + bottom) / 2,
+        path,
+        centerX, centerY,
+        normalX: centerX / normalLength,
+        normalY: centerY / normalLength,
         topEdge,
         bottom,
         span: Math.max(right - left, bottom - topEdge),
@@ -417,16 +453,16 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
     if (level <= 0) return;
     const silhouette = countrySilhouette(country);
     if (!silhouette) return;
-    const { path, centerX, centerY, topEdge, bottom, span } = silhouette;
+    const { path, centerX, centerY, normalX, normalY, topEdge, bottom, span } = silhouette;
     const still = reducedMotion.matches;
     if (still) elevation = 0;
     const screenSpan = span * camera.zoom;
-    // Cap the growth in screen pixels so large countries don't cover their neighbors.
-    const growth = 1 + Math.min(.047, 6 / Math.max(1, screenSpan)) * elevation * settings.hoverGrowth / 100;
     const lift = clamp(2.2 + Math.sqrt(screenSpan) * .17, 2.8, 5) * elevation * settings.hoverLift / 100;
+    // At 100%, each vertex lies on a concentric sphere with the lifted radius.
+    const growth = 1 + lift / radius * settings.hoverGrowth / 100;
     top.save();
     top.globalAlpha = level;
-    top.translate(x + centerX * camera.zoom, y + centerY * camera.zoom - lift);
+    top.translate(x + centerX * camera.zoom + lift * normalX, y + centerY * camera.zoom + lift * normalY);
     top.scale(camera.zoom * growth, camera.zoom * growth);
     top.translate(-centerX, -centerY);
 
@@ -611,20 +647,20 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
     }
     if (overlayDirty || animating) {
       const cuts = terrainCuts(selected);
-      if (gpuShadow) drawGpuShadow(cuts);
+      if (renderer.active) drawAcceleratedShadow(renderer.active, cuts);
       top.clearRect(0, 0, width, height);
       top.save();
       top.resetTransform();
       top.drawImage(terrainCanvas, 0, 0);
       top.restore();
-      top.save();
-      top.beginPath();
-      top.arc(x, y, radius, 0, Math.PI * 2);
-      top.clip();
       if (cuts.length) {
+        top.save();
+        top.beginPath();
+        top.arc(x, y, radius, 0, Math.PI * 2);
+        top.clip();
         top.globalCompositeOperation = 'destination-out';
-        applyTerrainCuts(top, cuts, !gpuShadow);
-        top.globalCompositeOperation = 'source-over';
+        applyTerrainCuts(top, cuts, !renderer.active);
+        top.restore();
       }
       if (highlight) {
         const elevation = correct
@@ -641,7 +677,6 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
         lift.lastElevation = lift.level * (1 - pressDepth);
         drawAccent(hover, 'hover', lift.level, lift.lastElevation);
       }
-      top.restore();
       overlayDirty = animating;
     }
     return animating || Boolean(pendingHover);
@@ -650,14 +685,16 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
   function render(time) {
     frame = 0;
     if (!width || !height) return;
+    const workStart = frameObserver ? performance.now() : 0;
     const elapsed = lastFrame === null ? 16 : clamp(time - lastFrame, 0, 50);
     lastFrame = time;
     updatePinch();
     if (motion) {
       const fraction = clamp((time - motion.start) / motion.duration, 0, 1);
-      const ease = easeOut(fraction);
+      const ease = motion.ease(fraction);
       camera.lon = wrapLongitude(motion.from.lon + motion.delta * ease);
-      camera.lat = motion.from.lat + (motion.to.lat - motion.from.lat) * ease;
+      const pitch = motion.pitchEase ? motion.pitchEase(fraction) : ease;
+      camera.lat = motion.from.lat + (motion.to.lat - motion.from.lat) * pitch;
       camera.zoom = fraction === 1 ? zoomTarget : motion.from.zoom + (zoomTarget - motion.from.zoom) * ease;
       camera.offsetX = motion.from.offsetX + (motion.to.offsetX - motion.from.offsetX) * ease;
       camera.offsetY = motion.from.offsetY + (motion.to.offsetY - motion.from.offsetY) * ease;
@@ -674,6 +711,11 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
       updateCenter();
       updateProjection();
       projectMap();
+      if (tiles) {
+        projection.clipExtent([[-3, mapTop - 3], [width + 3, mapBottom + 3]]);
+        tiles.update(viewCap(camera.lon, camera.lat, radius, x, y - mapTop, width, mapBottom - mapTop), radius);
+        detail = null;
+      }
       shoreDirty = true;
       cameraDirty = false;
       overlayDirty = true;
@@ -693,6 +735,7 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
     const accentMoving = drawSelection(time, moving, elapsed);
     if (moving || accentMoving) schedule();
     else lastFrame = null;
+    if (frameObserver) frameObserver({ time, workMs: performance.now() - workStart });
   }
 
   function schedule() {
@@ -735,7 +778,7 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
         paints = null;
         waterDirty = true;
       }
-      if (landChanged || (shoreChanged && !gpuShadow)) terrainDirty = true;
+      if (landChanged || (shoreChanged && !renderer.active)) terrainDirty = true;
       if (shoreChanged || accentChanged) overlayDirty = true;
       schedule();
     }
@@ -777,7 +820,7 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
       surface.height = Math.round(height * ratio);
     }
     for (const ctx of [base, top, terrain]) ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-    resizeGpuShadow();
+    resizeShadow();
     stage.style.setProperty('--map-fade-top', Math.max(8, mapTop - 12) + 'px');
     stage.style.setProperty('--map-fade-start', (mapBottom - 10) + 'px');
     stage.style.setProperty('--map-fade-end', (mapBottom + 15) + 'px');
@@ -806,7 +849,10 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
   }
 
   function zoomPivot(point) {
-    return { point, localX: (point.x - x) / camera.zoom, localY: (point.y - y) / camera.zoom };
+    return {
+      point, localX: (point.x - x) / camera.zoom, localY: (point.y - y) / camera.zoom,
+      location: maxZoom > MAX_ZOOM ? globePoint(camera, point, view) : null,
+    };
   }
 
   function applyZoom(zoom, anchor = zoomAnchor, point = anchor?.point) {
@@ -816,12 +862,17 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
       camera.offsetY = point.y - homeY - anchor.localY * zoom;
     }
     updateCenter();
+    if (anchor?.location && (zoom > MAX_ZOOM || anchor.spherical)) {
+      anchor.spherical = anchorGlobe(camera, anchor.location, point, view);
+      return anchor.spherical;
+    }
+    return false;
   }
 
   function zoomBy(factor, point = { x: homeX, y: homeY }) {
     if (motion) stopMotion();
     if (!zoomAnchor || pointDistance(point, zoomAnchor.point) > .5) zoomAnchor = zoomPivot(point);
-    zoomTarget = clamp(zoomTarget * factor, MIN_ZOOM, MAX_ZOOM);
+    zoomTarget = clamp(zoomTarget * factor, MIN_ZOOM, maxZoom);
     if (reducedMotion.matches || !settings.zoomResponse) {
       applyZoom(zoomTarget);
       markCamera();
@@ -830,7 +881,7 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
     }
   }
 
-  function goTo(target, duration) {
+  function goTo(target, duration, { ease = easeOut, start = performance.now(), pitchEase = null } = {}) {
     zoomAnchor = null;
     const destination = { offsetX: 0, offsetY: 0, ...target };
     zoomTarget = target.zoom;
@@ -846,7 +897,7 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
       return;
     }
     motion = {
-      start: performance.now(), duration, from: { ...camera }, to: destination,
+      start: Math.min(start, performance.now()), duration, ease, pitchEase, from: { ...camera }, to: destination,
       delta: wrapLongitude(target.lon - camera.lon),
     };
     schedule();
@@ -856,7 +907,8 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
     if (reducedMotion.matches || drag.pinched) return;
     const release = releaseGlobeMotion(drag.samples, camera, view, time,
       settings.inertiaDuration, settings.inertiaDistance);
-    if (release) goTo({ ...camera, lon: release.lon, lat: release.lat }, release.duration);
+    if (release) goTo({ ...camera, lon: release.lon, lat: release.lat }, release.duration,
+      { ease: release.ease, pitchEase: release.pitchEase, start: time });
   }
 
   function pinchFrame() {
@@ -879,14 +931,14 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
       if (span >= PINCH_MIN_SPAN) beginPinch();
       return;
     }
-    const zoom = clamp(pinch.zoom * Math.max(PINCH_MIN_SPAN, span) / pinch.span, MIN_ZOOM, MAX_ZOOM);
+    const zoom = clamp(pinch.zoom * Math.max(PINCH_MIN_SPAN, span) / pinch.span, MIN_ZOOM, maxZoom);
     if (pointDistance(pinch.point, point) < .01 && Math.abs(zoom - camera.zoom) < 1e-6) return;
     const atSameScale = Math.abs(zoom - camera.zoom) < 1e-6;
     const oldX = x;
     const oldY = y;
     zoomTarget = zoom;
-    applyZoom(zoom, pinch.anchor, point);
-    if (atSameScale) {
+    const anchored = applyZoom(zoom, pinch.anchor, point);
+    if (atSameScale && !anchored) {
       const residual = { x: point.x - (x - oldX), y: point.y - (y - oldY) };
       if (pointDistance(pinch.point, residual) > .01) {
         moveGlobe(camera, pinch.point, residual, view);
@@ -1079,18 +1131,7 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
   });
   resize();
 
-  if (navigator.gpu && new URLSearchParams(location.search).get('renderer') !== 'canvas') {
-    const surface = document.createElement('canvas');
-    surface.setAttribute('aria-hidden', 'true');
-    createGpuShoreShadow(surface, disableGpuShadow).then(shadow => {
-      if (!shadow) return;
-      gpuShadow = shadow;
-      shadowSurface = surface;
-      canvas.after(surface);
-      resizeGpuShadow();
-      markCamera();
-    });
-  }
+  renderer.select(new URLSearchParams(location.search).get('renderer'));
 
   return {
     paint(id, type) {
@@ -1109,6 +1150,13 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
       schedule();
     },
     goTo,
+    projectPoint(coordinates) { return width && height ? projectGlobePoint(camera, coordinates, view) : null; },
+    coordinatesAt(point) { return width && height ? globeCoordinates(camera, point, view) : null; },
     updateSettings,
+    observeFrames(observer) { frameObserver = observer; },
+    describeRendering() {
+      return { renderer: stage.dataset.renderer, preference: renderer.preference, width: canvas.width, height: canvas.height };
+    },
+    selectRenderer: renderer.select,
   };
 }

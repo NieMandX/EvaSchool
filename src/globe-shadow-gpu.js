@@ -1,3 +1,5 @@
+import { defaultShadowColor, shoreGaussian } from './globe-shadow-kernel.js';
+
 const SHADER = /* wgsl */ `
 struct Vertex { @builtin(position) position: vec4f, @location(0) uv: vec2f }
 @vertex fn vertex(@builtin(vertex_index) i: u32) -> Vertex {
@@ -37,29 +39,16 @@ struct Composite {
 }
 `;
 
-// WebGPU's linear sampler combines two adjacent Gaussian taps in one read.
-function gaussian(maskSize, cssSize, horizontal, blur) {
-  const sigma = blur > 0 ? Math.max(0.25, Math.min(8, blur * 0.5 * maskSize / cssSize)) : 0;
-  const radius = Math.ceil(sigma * 3);
-  const weight = distance => Math.exp(-0.5 * (distance / sigma) ** 2);
+function packKernel({ stepX, stepY, center, count, pairs }) {
+  // Uniform array elements must each occupy a 16-byte row in WGSL.
   const weights = new Float32Array(4 + 12 * 4);
-  let sum = 1;
-  weights[horizontal ? 0 : 1] = 1 / maskSize;
-  weights[2] = Math.ceil(radius / 2);
-  for (let i = 1; i <= radius; i += 2) {
-    const first = weight(i);
-    const second = i < radius ? weight(i + 1) : 0;
-    const index = 4 + 2 * (i - 1);
-    weights[index] = i + second / (first + second);
-    weights[index + 1] = first + second;
-    sum += 2 * (first + second);
+  weights.set([stepX, stepY, count, center]);
+  for (let i = 0; i < count; i++) {
+    weights[4 + i * 4] = pairs[i * 2];
+    weights[5 + i * 4] = pairs[i * 2 + 1];
   }
-  weights[3] = 1 / sum;
-  for (let i = 5; i < weights.length; i += 4) weights[i] /= sum;
   return weights;
 }
-
-const defaultShadowColor = [22 / 255, 56 / 255, 75 / 255, 122 / 255];
 
 export async function createGpuShoreShadow(canvas, onFailure) {
   const gpu = navigator.gpu;
@@ -182,8 +171,8 @@ export async function createGpuShoreShadow(canvas, onFailure) {
         }
         const kernelChanged = !cached || kernelBlur !== blur;
         if (kernelChanged) {
-          device.queue.writeBuffer(uniforms[0], 0, gaussian(source.width, width / ratio, true, blur));
-          device.queue.writeBuffer(uniforms[1], 0, gaussian(source.height, height / ratio, false, blur));
+          device.queue.writeBuffer(uniforms[0], 0, packKernel(shoreGaussian(source.width, width / ratio, true, blur)));
+          device.queue.writeBuffer(uniforms[1], 0, packKernel(shoreGaussian(source.height, height / ratio, false, blur)));
           kernelBlur = blur;
         }
         if (landMask || kernelChanged) {

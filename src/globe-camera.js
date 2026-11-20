@@ -1,7 +1,7 @@
 const RAD = Math.PI / 180;
 const DEG = 1 / RAD;
 const LIMB = .985;
-const RELEASE_WINDOW_MS = 60;
+const RELEASE_WINDOW_MS = 20;
 const RELEASE_IDLE_MS = 100;
 const MIN_RELEASE_SPEED = .065;
 
@@ -22,6 +22,29 @@ export function globePoint(camera, point, view) {
   return {
     longitude: camera.lon * RAD + Math.atan2(east, forward),
     latitude: Math.asin(clamp(front * Math.sin(tilt) + up * Math.cos(tilt), -1, 1)),
+  };
+}
+
+// WGS 84 longitude and latitude in degrees on the orthographic globe.
+export function globeCoordinates(camera, point, view) {
+  const location = globePoint(camera, point, view);
+  return location && [wrapLongitude(location.longitude * DEG), location.latitude * DEG];
+}
+
+export function projectGlobePoint(camera, coordinates, view) {
+  const [lon, lat] = coordinates;
+  if (!Number.isFinite(lon) || !Number.isFinite(lat) || Math.abs(lat) > 90) return null;
+  const delta = wrapLongitude(lon - camera.lon) * RAD;
+  const tilt = camera.lat * RAD;
+  const east = Math.cos(lat * RAD) * Math.sin(delta);
+  const forward = Math.cos(lat * RAD) * Math.cos(delta);
+  const north = Math.sin(lat * RAD);
+  const facing = forward * Math.cos(tilt) + north * Math.sin(tilt);
+  if (facing <= 0) return null;
+  const radius = view.radius * camera.zoom;
+  return {
+    x: view.x + radius * east,
+    y: view.y - radius * (north * Math.cos(tilt) - forward * Math.sin(tilt)),
   };
 }
 
@@ -91,6 +114,12 @@ export function recordGlobeMotion(samples, camera, time) {
   while (samples.length > 2 && samples[1].time <= cutoff) samples.shift();
 }
 
+function coastEase(duration, travel) {
+  // Integrate v(u) = v0 * (1 - u)^brake * (1 + brake * u).
+  const brake = 2 * (duration / travel - 1);
+  return u => -Math.expm1((brake + 1) * Math.log1p(-u) + Math.log1p(brake * u / 2));
+}
+
 export function releaseGlobeMotion(samples, camera, view, time, durationPercent, distancePercent) {
   if (samples.length < 2 || durationPercent <= 0 || distancePercent <= 0) return null;
   const first = samples[0];
@@ -99,25 +128,34 @@ export function releaseGlobeMotion(samples, camera, view, time, durationPercent,
   const age = Math.max(0, time - last.time);
   if (age >= RELEASE_IDLE_MS) return null;
 
-  // Interpolate the leading sample to compare the same time window at different input rates.
+  // Use the last frame or so of the drag, even when pointer event rates differ.
   const start = Math.max(first.time, last.time - RELEASE_WINDOW_MS);
   const fraction = (start - first.time) / (next.time - first.time);
   const interval = last.time - start;
   if (interval < 4) return null;
-  const attenuation = Math.exp(-age / 44) / interval;
+  // The normal gap between the last move and pointerup is not a pause.
+  const pause = clamp((age - RELEASE_WINDOW_MS) / (RELEASE_IDLE_MS - RELEASE_WINDOW_MS), 0, 1);
+  const attenuation = (1 - pause * pause * (3 - 2 * pause)) / interval;
   const vLon = (last.lon - first.lon - (next.lon - first.lon) * fraction) * attenuation;
   const vLat = (last.lat - first.lat - (next.lat - first.lat) * fraction) * attenuation;
   const parallel = Math.max(.22, Math.cos(camera.lat * RAD));
   const speed = Math.hypot(vLon * parallel, vLat) * view.radius * camera.zoom * RAD;
   if (speed < MIN_RELEASE_SPEED) return null;
 
-  const duration = clamp(216 + 74 * Math.log1p(speed / .33), 220, 390);
-  const freeTravel = speed * (duration / 3) * (distancePercent / 100);
+  const baseDuration = clamp(216 + 74 * Math.log1p(speed / .33), 220, 390);
+  const duration = baseDuration * durationPercent / 100;
+  const freeTravel = speed * (baseDuration / 3) * (distancePercent / 100);
   // Ease into the travel limit so stronger flicks keep their distinction from slower drags.
   const limit = view.radius * .88;
-  const travel = -limit * Math.expm1(-freeTravel / limit) / speed;
-  const lon = wrapLongitude(camera.lon + clamp(vLon * travel, -120, 120));
-  const lat = clamp(camera.lat + vLat * travel, -89, 89);
+  const travel = Math.min(-limit * Math.expm1(-freeTravel / limit) / speed, duration * .9, 120 / Math.abs(vLon));
+  const lon = wrapLongitude(camera.lon + vLon * travel);
+  const freeLatitude = camera.lat + vLat * travel;
+  const lat = clamp(freeLatitude, -89, 89);
   if (Math.hypot(wrapLongitude(lon - camera.lon), lat - camera.lat) < .02) return null;
-  return { lon, lat, duration: duration * durationPercent / 100 };
+
+  // When a pole limits the pitch, brake that axis sooner while matching release speed.
+  const pitchEase = lat !== freeLatitude && lat !== camera.lat
+    ? coastEase(duration, (lat - camera.lat) / vLat)
+    : null;
+  return { lon, lat, duration, ease: coastEase(duration, travel), pitchEase };
 }

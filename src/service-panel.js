@@ -1,3 +1,5 @@
+import { mountServiceWindow } from './service-window.js';
+
 const STORAGE_KEY = 'kontur:service-preset:v1';
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -216,9 +218,6 @@ export function mountServicePanel({ groups, defaults, applySettings, decodePrese
 
   let saveTimer = null;
   let importRevision = 0;
-  let panelPosition = null;
-  let panelDrag = null;
-  let previousFocus = null;
   const fields = new Map();
 
   function announce(text, error = false) {
@@ -386,79 +385,10 @@ export function mountServicePanel({ groups, defaults, applySettings, decodePrese
     jsonInput.select();
   });
 
-  function placePanel(left, top) {
-    const margin = 8;
-    const { clientWidth, clientHeight } = document.documentElement;
-    left = Math.max(margin, Math.min(left, clientWidth - panel.offsetWidth - margin));
-    top = Math.max(margin, Math.min(top, clientHeight - panel.offsetHeight - margin));
-    if (panelPosition && left === panelPosition.left && top === panelPosition.top) return;
-    panelPosition = { left, top };
-    panel.style.setProperty('--service-panel-x', `${left}px`);
-    panel.style.setProperty('--service-panel-y', `${top}px`);
-  }
-
-  function keepPanelVisible() {
-    if (panelPosition && !panel.hidden) placePanel(panelPosition.left, panelPosition.top);
-  }
-
-  function endPanelDrag() {
-    if (!panelDrag) return;
-    const { id } = panelDrag;
-    panelDrag = null;
-    panel.removeAttribute('data-dragging');
-    if (header.hasPointerCapture(id)) header.releasePointerCapture(id);
-  }
-
-  header.addEventListener('pointerdown', event => {
-    if (panelDrag || event.button !== 0 || event.target.closest('button')) return;
-    const { left, top } = panel.getBoundingClientRect();
-    panelDrag = { id: event.pointerId, x: event.clientX - left, y: event.clientY - top };
-    header.setPointerCapture(event.pointerId);
-    panel.setAttribute('data-dragging', '');
-  });
-  window.addEventListener('pointermove', event => {
-    if (panelDrag?.id === event.pointerId) placePanel(event.clientX - panelDrag.x, event.clientY - panelDrag.y);
-  });
-  const finishPointer = event => {
-    if (panelDrag?.id === event.pointerId) endPanelDrag();
-  };
-  window.addEventListener('pointerup', finishPointer);
-  window.addEventListener('pointercancel', finishPointer);
-  header.addEventListener('lostpointercapture', finishPointer);
-  window.addEventListener('blur', endPanelDrag);
-  window.addEventListener('resize', keepPanelVisible);
-  new ResizeObserver(keepPanelVisible).observe(panel);
-
-  function openPanel(open) {
-    const restoreFocus = !open && panel.contains(document.activeElement);
-    if (open) previousFocus = document.activeElement;
-    else endPanelDrag();
-    panel.hidden = !open;
-    if (open) {
-      keepPanelVisible();
-      close.focus({ preventScroll: true });
-    }
-    if (restoreFocus && previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
-  }
-
-  close.addEventListener('click', () => openPanel(false));
-  document.addEventListener('keydown', event => {
-    if (event.defaultPrevented || event.isComposing) return;
-    if (!panel.hidden && event.key === 'Escape') {
-      event.preventDefault();
-      openPanel(false);
-      return;
-    }
-    const isN = event.code === 'KeyN' || event.key.toLowerCase() === 'n';
-    if (!isN || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
-    const target = event.target;
-    if (target instanceof Element && (target.closest('input, textarea, select') || target.isContentEditable)) return;
-    event.preventDefault();
-    openPanel(panel.hidden);
-  });
   window.addEventListener('pagehide', () => {
     if (saveTimer !== null) save();
   });
 
   document.body.append(panel);
+  mountServiceWindow({ panel, header, close, key: 'N' });
 }

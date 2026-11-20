@@ -1,0 +1,74 @@
+.service-performance {
+  inset-inline-start: var(--service-panel-x, auto);
+  inset-inline-end: var(--service-edge);
+  width: min(272px, calc(100vw - 16px));
+  max-block-size: min(335px, calc(100svh - var(--service-origin) - 12px));
+}
+.service-performance[data-positioned] { inset-inline-end: auto; }
+.service-performance .service-title { font-size: 15px; }
+.service-performance .service-close {
+  padding: 0;
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 1;
+}
+.performance-content {
+  min-block-size: 0;
+  padding: 0 14px 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.performance-rate,
+.performance-metrics { margin: 0; }
+.performance-rate {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-block-size: 46px;
+  padding: 2px 0 6px;
+}
+.performance-rate dt { color: var(--service-muted); font-weight: 750; }
+.performance-rate dd,
+.performance-metric dd {
+  margin: 0;
+  color: var(--service-ink);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.performance-rate dd {
+  font-size: 32px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -.045em;
+}
+.performance-rate[data-idle] dd {
+  color: var(--service-muted);
+  font-size: 20px;
+  letter-spacing: -.02em;
+}
+.performance-metric,
+.performance-choice {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  border-top: 1px solid #d7e3e7;
+  padding-block: 6px;
+}
+.performance-metric dt,
+.performance-choice { color: var(--service-muted); }
+.performance-metric dd { font-weight: 750; }
+.performance-choice { padding-block-end: 0; }
+.performance-choice select { inline-size: 118px; }
+@media (max-width: 600px) {
+  .service-performance {
+    inset-block-start: var(--service-panel-y, var(--service-origin));
+    width: min(244px, calc(100vw - 16px));
+    max-block-size: min(285px, calc(100svh - var(--service-origin) - 12px));
+  }
+  .performance-content { padding-inline: 10px; }
+}
+@media (pointer: coarse) {
+  .performance-choice select { font-size: 16px; }
+}

@@ -6,7 +6,8 @@ const root = new URL('../', import.meta.url);
 const file = path => new URL(path, root);
 const service = process.argv.includes('--service');
 const outputDirectory = service ? 'dist-service' : 'dist';
-const styleFiles = service ? ['src/style.css', 'src/service-panel.css'] : ['src/style.css'];
+const styleFiles = ['src/style.css'];
+if (service) styleFiles.push('src/service-panel.css', 'src/service-performance.css');
 const [template, styleSources, bundled] = await Promise.all([
   readFile(file('src/index.html'), 'utf8'),
   Promise.all(styleFiles.map(path => readFile(file(path), 'utf8'))),

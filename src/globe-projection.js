@@ -6,6 +6,33 @@ const MAX_EDGE = RAD; // Preserve all source vertices and sample long geodesics 
 const MIN_EDGE_COSINE = Math.cos(MAX_EDGE);
 const LIMB_EPSILON = 1e-10;
 const LIMB_DEPTH_BIAS = 1e-8;
+const QUARTER_TURN = Math.PI / 2;
+
+// Use the same clipped outline for painting, picking and finding the lift pivot.
+export function boundPath(path) {
+  const bounds = { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity };
+  function include(x, y) {
+    bounds.left = Math.min(bounds.left, x);
+    bounds.top = Math.min(bounds.top, y);
+    bounds.right = Math.max(bounds.right, x);
+    bounds.bottom = Math.max(bounds.bottom, y);
+  }
+  return {
+    bounds,
+    moveTo(x, y) { path.moveTo(x, y); include(x, y); },
+    lineTo(x, y) { path.lineTo(x, y); include(x, y); },
+    closePath() { path.closePath(); },
+    arc(x, y, radius, start, end) {
+      path.arc(x, y, radius, start, end);
+      end = Math.min(end, start + TAU);
+      for (let angle = Math.ceil(start / QUARTER_TURN) * QUARTER_TURN; angle <= end; angle += QUARTER_TURN) {
+        include(x + radius * Math.cos(angle), y + radius * Math.sin(angle));
+      }
+      include(x + radius * Math.cos(start), y + radius * Math.sin(start));
+      include(x + radius * Math.cos(end), y + radius * Math.sin(end));
+    },
+  };
+}
 
 function unitVector([longitude, latitude]) {
   const lon = longitude * RAD;

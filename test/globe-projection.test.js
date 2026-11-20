@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { geoContains, geoOrthographic, geoPath } from 'd3-geo';
 import { feature } from 'topojson-client';
-import { createGlobeProjector, prepareMapPart } from '../src/globe-projection.js';
+import { boundPath, createGlobeProjector, prepareMapPart } from '../src/globe-projection.js';
 
 class SamplePath {
   rings = [];
@@ -62,9 +62,12 @@ test('an island touching the horizon stays a thin sliver', () => {
     coordinates: [[[89, -1], [89, 1], [90, .5], [91, -1], [89, -1]]],
   });
   const path = new SamplePath();
-  assert.ok(createGlobeProjector(0, 0, 500).append(path, part));
+  const bounded = boundPath(path);
+  assert.ok(createGlobeProjector(0, 0, 500).append(bounded, part));
   assert.equal(path.rings.length, 1);
   assert.ok(path.rings[0].every(([x]) => x > 499));
+  assert.ok(bounded.bounds.left > 499);
+  assert.equal(bounded.bounds.right, 500);
 });
 
 test('continent fills agree with spherical containment across the limb, poles and antimeridian', () => {

@@ -65,6 +65,12 @@ const globe = createGlobe({
   onSelect: guess,
 });
 
+export const renderingDiagnostics = {
+  observeFrames: globe.observeFrames,
+  describeRendering: globe.describeRendering,
+  selectRenderer: globe.selectRenderer,
+};
+
 function message(text = '', tone = '') {
   if (feedback.textContent === text && (feedback.dataset.tone ?? '') === tone) return;
   feedbackMotion?.cancel();

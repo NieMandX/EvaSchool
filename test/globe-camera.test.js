@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { moveGlobe, recordGlobeMotion, releaseGlobeMotion, wrapLongitude } from '../src/globe-camera.js';
+import {
+  globeCoordinates, moveGlobe, projectGlobePoint, recordGlobeMotion, releaseGlobeMotion, wrapLongitude,
+} from '../src/globe-camera.js';
 
 const view = { x: 400, y: 300, radius: 200 };
 
@@ -59,4 +61,47 @@ test('crossing the antimeridian does not reverse the release', () => {
   const release = releaseGlobeMotion(samples, camera, view, 36, 100, 100);
   assert(release);
   assert(wrapLongitude(release.lon - camera.lon) > 0);
+});
+
+test('a fast release starts at drag speed, including after the last normal frame gap', () => {
+  const samples = [];
+  const camera = { lon: 120, lat: 25, zoom: 1 };
+  for (const time of [0, 8, 20, 31]) {
+    camera.lon = wrapLongitude(120 + 1.9 * time);
+    camera.lat = 25 + .4 * time;
+    recordGlobeMotion(samples, camera, time);
+  }
+  for (const [timeScale, distanceScale] of [[100, 100], [25, 200], [200, 25]]) {
+    const { lon, lat, duration, ease } = releaseGlobeMotion(samples, camera, view, 48, timeScale, distanceScale);
+    const dt = duration * 1e-5;
+    const fraction = ease(dt / duration);
+    assert(Math.abs(wrapLongitude(lon - camera.lon) * fraction / dt - 1.9) < .001);
+    assert(Math.abs((lat - camera.lat) * fraction / dt - .4) < .001);
+    assert(ease(0) === 0);
+    assert.equal(ease(1), 1);
+  }
+});
+
+test('a flick toward a pole eases to the latitude limit while longitude keeps coasting', () => {
+  const camera = { lon: 16, lat: 88, zoom: 1 };
+  const samples = [{ lon: 10, lat: 80, time: 0 }, { ...camera, time: 16 }];
+  const { lat, duration, ease, pitchEase } = releaseGlobeMotion(samples, camera, view, 16, 100, 100);
+  assert.equal(lat, 89);
+  assert(Math.abs(pitchEase(1e-5) / (duration * 1e-5) - .5) < .001);
+  assert(pitchEase(.2) > ease(.2));
+  assert.equal(pitchEase(1), 1);
+});
+
+test('geographic placement and picking are inverse at the dateline, near the poles and at large scales', () => {
+  for (const { camera, at } of [
+    { camera: { lon: 178, lat: 6, zoom: 1 }, at: [-177, 4.2] },
+    { camera: { lon: -65, lat: 88, zoom: 2.5 }, at: [25, 89.9] },
+    { camera: { lon: -122.4, lat: 37.7, zoom: 2 ** 18 }, at: [-122.4003, 37.7002] },
+  ]) {
+    const screen = projectGlobePoint(camera, at, view);
+    const [lon, lat] = globeCoordinates(camera, screen, view);
+    assert(Math.abs(wrapLongitude(at[0] - lon)) < 1e-8);
+    assert(Math.abs(at[1] - lat) < 1e-8);
+    assert.equal(projectGlobePoint(camera, [camera.lon + 180, -camera.lat], view), null);
+  }
 });
