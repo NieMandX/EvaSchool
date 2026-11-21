@@ -31,6 +31,8 @@ npm run preview
 
 Локальный предпросмотр использует ту же SQLite-базу в обычной и сервисной сборках. Путь к файлу задаёт `KONTUR_RANKINGS_DB`. По умолчанию используется `.kontur-ranking.sqlite`.
 
+Для хостинга на Cloudflare Workers используется `server/rankings-worker.mjs` с привязкой D1 `DB`. В D1 применяется та же миграция `server/migrations/0001_rankings.sql`. По умолчанию Worker принимает запросы из браузера с `https://niemandx.github.io`.
+
 Для общего рейтинга с GitHub Pages запустите `npm run start:ranking` на сервере с Node.js 22 и постоянным диском. По умолчанию сервер слушает `127.0.0.1:4389`. Адрес и порт задают `KONTUR_RANKINGS_HOST` и `KONTUR_RANKINGS_PORT`. Настройте перед сервером HTTPS и задайте `KONTUR_RANKINGS_ORIGIN=https://niemandx.github.io`. В переменной репозитория `KONTUR_RANKINGS_URL` укажите HTTPS-адрес API с путём `/api/ranking`, затем соберите и опубликуйте сайт.
 
 При подключённом API общий список показывает псевдонимы и рекорды. Для перехода в общий список игрок сохраняет имя в окне профиля. Без API рейтинг работает внутри текущего браузера. Профиль привязан к браузеру, в котором его создали.

@@ -111,7 +111,7 @@ async function syncRanking(player) {
   rankingError = false;
   renderPlayers();
   try {
-    if (player?.shared) players.record(player.token, await ranking.record(player));
+    if (player?.shared && player.best !== null) players.record(player.token, await ranking.record(player));
     const entries = await ranking.leaderboard();
     if (request === rankingRequest) sharedEntries = entries;
   } catch {

@@ -49,7 +49,7 @@ export function mountPlayerPanel({ onSelect, onOpen, onClose }) {
     dismiss.textContent = player ? 'К игре' : 'Играть без имени';
     record.hidden = !player;
     best.textContent = player?.best ?? '—';
-    note.textContent = shared ? 'Можно указать псевдоним. После игры имя может появиться в общем рейтинге.' : 'Можно указать псевдоним.';
+    note.textContent = shared ? 'Придумай псевдоним. После игры он может появиться в общем рейтинге.' : 'Можно указать псевдоним.';
 
     const options = profiles.map(({ name }) => {
       const option = document.createElement('option');
