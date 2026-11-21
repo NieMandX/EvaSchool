@@ -27,8 +27,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   homeLat: 18,
   homeZoom: 1,
   resetDuration: 440,
-  inertiaDuration: 100,
-  inertiaDistance: 100,
+  inertiaDuration: 200,
+  inertiaDistance: 200,
   zoomResponse: 42,
 
   waterLight: '#9abac6',
