@@ -143,12 +143,12 @@ export function releaseGlobeMotion(samples, camera, view, time, durationPercent,
   const speed = Math.hypot(vLon * parallel, vLat) * view.radius * camera.zoom * RAD;
   if (speed < MIN_RELEASE_SPEED) return null;
 
-  const baseDuration = clamp(216 + 74 * Math.log1p(speed / .33), 220, 390);
+  const baseDuration = clamp(225 + 155 * Math.log1p(speed / .42), 235, 720);
   const duration = baseDuration * durationPercent / 100;
   const freeTravel = speed * (baseDuration / 3) * (distancePercent / 100);
   // Ease into the travel limit so stronger flicks keep their distinction from slower drags.
-  const limit = view.radius * .88;
-  const travel = Math.min(-limit * Math.expm1(-freeTravel / limit) / speed, duration * .9, 120 / Math.abs(vLon));
+  const limit = view.radius * 2.1;
+  const travel = Math.min(-limit * Math.expm1(-freeTravel / limit) / speed, duration * .9, 145 / Math.abs(vLon));
   const lon = wrapLongitude(camera.lon + vLon * travel);
   const freeLatitude = camera.lat + vLat * travel;
   const lat = clamp(freeLatitude, -89, 89);

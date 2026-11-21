@@ -98,6 +98,24 @@ test('a 30 Hz touch drag retains its release speed through one delayed input fra
   assert.equal(releaseGlobeMotion(samples, camera, view, 200, 100, 100), null);
 });
 
+test('a fast flick carries momentum for longer without over-spinning a slow drag', () => {
+  const camera = { lon: 0, lat: 0, zoom: 1 };
+  const velocity = pixelsPerMs => pixelsPerMs * 180 / (Math.PI * view.radius);
+  const release = speed => releaseGlobeMotion(
+    [{ lon: -20 * velocity(speed), lat: 0, time: 0 }, { ...camera, time: 20 }],
+    camera, view, 20, 100, 100,
+  );
+  const slow = release(.12);
+  const fast = release(2.5);
+  assert(slow.lon < 5);
+  assert(fast.lon > 70);
+  assert(fast.duration > 500);
+  const angleAt = time => fast.lon * fast.ease(time / fast.duration);
+  assert(angleAt(16) / 16 > .95 * velocity(2.5));
+  assert(angleAt(250) > angleAt(200) + 1);
+  assert(angleAt(250) - angleAt(200) < angleAt(50));
+});
+
 test('a flick toward a pole eases to the latitude limit while longitude keeps coasting', () => {
   const camera = { lon: 16, lat: 88, zoom: 1 };
   const samples = [{ lon: 10, lat: 80, time: 0 }, { ...camera, time: 16 }];
