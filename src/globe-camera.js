@@ -2,6 +2,7 @@ const RAD = Math.PI / 180;
 const DEG = 1 / RAD;
 const LIMB = .985;
 const RELEASE_WINDOW_MS = 20;
+const RELEASE_GRACE_MS = 42;
 const RELEASE_IDLE_MS = 100;
 const MIN_RELEASE_SPEED = .065;
 
@@ -134,7 +135,7 @@ export function releaseGlobeMotion(samples, camera, view, time, durationPercent,
   const interval = last.time - start;
   if (interval < 4) return null;
   // The normal gap between the last move and pointerup is not a pause.
-  const pause = clamp((age - RELEASE_WINDOW_MS) / (RELEASE_IDLE_MS - RELEASE_WINDOW_MS), 0, 1);
+  const pause = clamp((age - RELEASE_GRACE_MS) / (RELEASE_IDLE_MS - RELEASE_GRACE_MS), 0, 1);
   const attenuation = (1 - pause * pause * (3 - 2 * pause)) / interval;
   const vLon = (last.lon - first.lon - (next.lon - first.lon) * fraction) * attenuation;
   const vLat = (last.lat - first.lat - (next.lat - first.lat) * fraction) * attenuation;

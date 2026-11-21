@@ -881,7 +881,15 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
     }
   }
 
-  function goTo(target, duration, { ease = easeOut, start = performance.now(), pitchEase = null } = {}) {
+  function beginCameraMotion(destination, duration, ease = easeOut, pitchEase = null) {
+    motion = {
+      start: performance.now(), duration, ease, pitchEase, from: { ...camera }, to: destination,
+      delta: wrapLongitude(destination.lon - camera.lon),
+    };
+    schedule();
+  }
+
+  function goTo(target, duration) {
     zoomAnchor = null;
     const destination = { offsetX: 0, offsetY: 0, ...target };
     zoomTarget = target.zoom;
@@ -896,19 +904,18 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
       markCamera();
       return;
     }
-    motion = {
-      start: Math.min(start, performance.now()), duration, ease, pitchEase, from: { ...camera }, to: destination,
-      delta: wrapLongitude(target.lon - camera.lon),
-    };
-    schedule();
+    beginCameraMotion(destination, duration);
   }
 
   function coast(drag, time) {
-    if (reducedMotion.matches || drag.pinched) return;
+    // A direct flick still brakes smoothly with Reduce Motion on, but travels less.
+    const scale = reducedMotion.matches ? .7 : 1;
     const release = releaseGlobeMotion(drag.samples, camera, view, time,
-      settings.inertiaDuration, settings.inertiaDistance);
-    if (release) goTo({ ...camera, lon: release.lon, lat: release.lat }, release.duration,
-      { ease: release.ease, pitchEase: release.pitchEase, start: time });
+      settings.inertiaDuration * scale, settings.inertiaDistance * scale);
+    if (release) {
+      beginCameraMotion({ ...camera, lon: release.lon, lat: release.lat },
+        release.duration, release.ease, release.pitchEase);
+    }
   }
 
   function pinchFrame() {
@@ -954,7 +961,7 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
     const beforeLat = camera.lat;
     moveGlobe(camera, prior, point, view);
     if (beforeLon === camera.lon && beforeLat === camera.lat) return;
-    if (!gesture.pinched) recordGlobeMotion(gesture.samples, camera, time);
+    if (time !== undefined) recordGlobeMotion(gesture.samples, camera, time);
     markCamera();
   }
 
@@ -972,6 +979,11 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
     const rect = overlay.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   };
+
+  function pointerTime(event) {
+    const now = performance.now();
+    return event.timeStamp > 0 && event.timeStamp <= now ? event.timeStamp : now;
+  }
 
   input.addEventListener('pointerdown', event => {
     if (event.button !== 0) return;
@@ -996,7 +1008,7 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
         threshold: event.pointerType === 'touch' ? 6 : 4,
         samples: [],
       };
-      recordGlobeMotion(gesture.samples, camera, event.timeStamp);
+      recordGlobeMotion(gesture.samples, camera, pointerTime(event));
     } else {
       gesture.dragged = true;
       gesture.pinched = true;
@@ -1031,11 +1043,11 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
       return;
     }
     if (gesture.dragged) {
-      dragGlobe(point, previous, event.timeStamp);
+      dragGlobe(point, previous, pointerTime(event));
     } else if (pointDistance(point, gesture.start) >= gesture.threshold) {
       gesture.dragged = true;
       overlay.setAttribute('data-dragging', '');
-      dragGlobe(point, gesture.start, event.timeStamp);
+      dragGlobe(point, gesture.start, pointerTime(event));
     }
   }
 
@@ -1044,25 +1056,33 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
     if (!previous) return;
     updatePinch();
     pointers.delete(event.pointerId);
+    const time = pointerTime(event);
+    const drag = gesture;
     if (pointers.size) {
-      // The remaining finger continues from its actual position and cannot tap.
-      gesture.pinch = null;
+      // A new one-finger movement can build its own velocity after a pinch.
+      drag.pinch = null;
+      drag.dragged = false;
+      drag.start = pointers.values().next().value;
+      drag.samples.length = 0;
+      recordGlobeMotion(drag.samples, camera, time);
+      overlay.removeAttribute('data-dragging');
       schedule();
       return;
     }
     const point = eventPoint(event);
-    const drag = gesture;
     const released = event.type === 'pointerup';
     const overInput = released && input.contains(document.elementFromPoint(event.clientX, event.clientY));
     if (released && drag.dragged && pointDistance(point, previous) > .01) {
-      dragGlobe(point, previous, event.timeStamp);
+      // The up coordinate can jitter or include a tiny unsampled tail.
+      // Apply it to the pose without replacing the velocity from move events.
+      dragGlobe(point, previous);
     }
     gesture = null;
     overlay.removeAttribute('data-dragging');
     pointer = event.pointerType !== 'touch' && overInput ? point : null;
     if (released) {
-      if (drag.dragged) coast(drag, event.timeStamp);
-      else if (overInput && pointDistance(point, drag.start) < drag.threshold) select(point);
+      if (drag.dragged) coast(drag, time);
+      else if (!drag.pinched && overInput && pointDistance(point, drag.start) < drag.threshold) select(point);
     }
     overlayDirty = true;
     schedule();

@@ -82,6 +82,22 @@ test('a fast release starts at drag speed, including after the last normal frame
   }
 });
 
+test('a 30 Hz touch drag retains its release speed through one delayed input frame', () => {
+  const camera = { lon: 87, lat: 18, zoom: 1 };
+  const samples = [];
+  for (const time of [0, 33, 66, 99]) {
+    camera.lon = 87 - .25 * time;
+    recordGlobeMotion(samples, camera, time);
+  }
+  const immediate = releaseGlobeMotion(samples, camera, view, 99, 100, 100);
+  for (const delay of [23, 33, 42]) {
+    const delayed = releaseGlobeMotion(samples, camera, view, 99 + delay, 100, 100);
+    assert.equal(delayed.lon, immediate.lon);
+    assert.equal(delayed.duration, immediate.duration);
+  }
+  assert.equal(releaseGlobeMotion(samples, camera, view, 200, 100, 100), null);
+});
+
 test('a flick toward a pole eases to the latitude limit while longitude keeps coasting', () => {
   const camera = { lon: 16, lat: 88, zoom: 1 };
   const samples = [{ lon: 10, lat: 80, time: 0 }, { ...camera, time: 16 }];
