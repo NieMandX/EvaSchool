@@ -25,7 +25,7 @@
   --rust: #803f30;
   --page-inset: clamp(16px, 3.5vw, 58px);
   --header-height: clamp(42px, 6svh, 60px);
-  --prompt-height: clamp(188px, calc(85px + 17.7svh), 272px);
+  --prompt-inset: clamp(188px, calc(85px + 17.7svh), 272px);
   font-family: Manrope, system-ui, sans-serif;
   color: var(--ink);
   background: var(--page);
@@ -82,12 +82,8 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
   transform-origin: left center;
 }
 
-.game {
-  flex: 1;
-  display: grid;
-  grid-template: minmax(136px, 1fr) var(--prompt-height) / minmax(0, 1fr);
-}
-.stage { grid-row: 1; min-width: 0; }
+.game { flex: 1; }
+.stage { position: absolute; inset: 0; }
 .stage canvas {
   position: absolute;
   inset: 0;
@@ -95,13 +91,11 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
   height: 100%;
   display: block;
   pointer-events: none;
-  mask-image: linear-gradient(transparent, black var(--map-fade-top), black var(--map-fade-start), transparent var(--map-fade-end));
 }
 #selection { outline-offset: -3px; }
 .globe-input {
   position: absolute;
-  inset: var(--map-input-top, 0px) 0 auto;
-  height: var(--map-input-height, 0px);
+  inset: 0;
   touch-action: none;
   cursor: grab;
 }
@@ -124,12 +118,13 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
 #selection:focus-visible + .crosshair { display: block; }
 
 .prompt {
-  grid-row: 2;
-  position: relative;
+  position: absolute;
+  inset-block-start: calc(100% - var(--prompt-inset));
+  inset-inline: 0;
   z-index: 1;
   text-align: center;
   width: min(100% - 2 * var(--page-inset), 680px);
-  justify-self: center;
+  margin-inline: auto;
   padding-top: clamp(3px, 1.05svh, 11px);
   pointer-events: none;
   --question-x-room: max(var(--page-inset), calc((100vw - 680px) / 2));
@@ -159,6 +154,7 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
   line-height: 1.05;
   letter-spacing: -.06em;
   white-space: nowrap;
+  text-shadow: 0 1px 2px #edf5f3bf, 0 0 6px #edf5f37a;
   transition: color .16s ease-out;
 }
 .country[data-tone="correct"] { color: var(--green); }
@@ -171,10 +167,7 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
 }
 .button {
   min-height: 44px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  padding: 0 clamp(8px, 1.1vw, 17px);
+  padding: 0 clamp(14px, 1.45vw, 22px);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -185,10 +178,16 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
   pointer-events: auto;
   transition: background-color .15s ease, transform .18s cubic-bezier(.2, .7, .35, 1);
 }
+.button, .hint-link {
+  border: 1px solid #ecf4f3c2;
+  border-radius: 999px;
+  background: #edf5f3eb;
+  box-shadow: 0 1px 4px #10333e1a;
+}
 .button:active { transform: scale(.975); transition-duration: 80ms; }
-.button:hover { background: #102e3b0d; }
+.button:hover, .hint-link:hover { background: #f6faf9; }
 .button svg { width: clamp(20px, 2.9svh, 30px); height: auto; aspect-ratio: 1; flex: none; }
-.button[aria-expanded="true"] { background: #102e3b12; }
+.button[aria-expanded="true"] { background: #deebe9; }
 .feedback {
   min-block-size: 2.7em;
   max-inline-size: 56ch;
@@ -197,6 +196,7 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
   font-weight: 750;
   font-size: clamp(13px, 1.55svh, 16px);
   line-height: 1.35;
+  text-shadow: 0 1px 2px #edf5f3, 0 0 5px #edf5f3;
 }
 .feedback[data-tone="wrong"] { color: var(--rust); }
 .feedback[data-tone="correct"] { color: var(--green); }
@@ -205,9 +205,7 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
   display: inline-flex;
   align-items: center;
   min-height: 36px;
-  border: 0;
-  padding: 0;
-  background: none;
+  padding: 0 10px;
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
@@ -217,16 +215,18 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
 }
 
 @media (max-width: 600px) {
-  :root { --prompt-height: clamp(192px, calc(26svh + 8px), 240px); }
+  :root { --prompt-inset: clamp(192px, calc(26svh + 8px), 240px); }
   .country-slot { --country-size: clamp(40px, 7.5svh, 66px); }
   .button { font-size: 15px; }
 }
 @media (max-width: 350px) {
-  :root { --prompt-height: clamp(202px, calc(100px + 15svh), 250px); }
+  :root { --prompt-inset: clamp(202px, calc(100px + 15svh), 250px); }
   .feedback { min-block-size: 4.05em; }
+  .hint-options { gap: 7px; }
+  .hint-link { padding-inline: 6px; }
 }
 @media (max-height: 480px) and (min-width: 600px) {
-  :root { --header-height: 43px; --prompt-height: 160px; }
+  :root { --header-height: 43px; --prompt-inset: 176px; }
   .country-slot { --country-size: 37px; }
 }
 @media (prefers-reduced-motion: reduce) {

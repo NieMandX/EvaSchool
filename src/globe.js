@@ -125,6 +125,7 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
   let naturalRadius = 1;
   let mapTop = 0;
   let mapBottom = 0;
+  let layoutTop = 0;
   let frame = 0;
   let cameraDirty = true;
   let waterDirty = true;
@@ -787,11 +788,12 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
   function updateLayout() {
     const mapHeight = mapBottom - mapTop;
     if (!width || !height || !mapHeight) return;
-    const fittedRadius = Math.max(1, Math.min(width * .457, (mapHeight - 22) / 2));
+    const availableHeight = mapBottom - layoutTop;
+    const fittedRadius = Math.max(1, Math.min(width * .457, (availableHeight - 32) / 2));
     naturalRadius = fittedRadius * settings.globeSize / 100;
     homeX = width / 2 + settings.globeX;
-    const freeSpace = mapHeight - 2 * fittedRadius;
-    homeY = (mapTop + mapBottom) / 2 + Math.min(34, Math.max(0, (freeSpace - 26) * .19)) - 13 + settings.globeY;
+    const freeSpace = availableHeight - 2 * fittedRadius;
+    homeY = (layoutTop + mapBottom) / 2 + Math.min(34, Math.max(0, (freeSpace - 26) * .19)) - 13 + settings.globeY;
     maxOffsetX = Math.min(width * .24, naturalRadius * 1.1);
     maxOffsetY = Math.min(mapHeight * .29, naturalRadius * .77);
     view.radius = naturalRadius;
@@ -815,17 +817,14 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
     ratio = Math.min(devicePixelRatio || 1, 2, Math.sqrt(MAX_PIXELS / (width * height)));
     mapTop = region.top - rect.top;
     mapBottom = region.bottom - rect.top;
+    // Center the default globe below the header while keeping the entire stage interactive.
+    layoutTop = stage.parentElement.getBoundingClientRect().top - rect.top;
     for (const surface of [canvas, overlay, terrainCanvas]) {
       surface.width = Math.round(width * ratio);
       surface.height = Math.round(height * ratio);
     }
     for (const ctx of [base, top, terrain]) ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
     resizeShadow();
-    stage.style.setProperty('--map-fade-top', Math.max(8, mapTop - 12) + 'px');
-    stage.style.setProperty('--map-fade-start', (mapBottom - 10) + 'px');
-    stage.style.setProperty('--map-fade-end', (mapBottom + 15) + 'px');
-    stage.style.setProperty('--map-input-top', Math.max(0, mapTop - 9) + 'px');
-    stage.style.setProperty('--map-input-height', (mapBottom - Math.max(0, mapTop - 9)) + 'px');
     updateLayout();
   }
 
