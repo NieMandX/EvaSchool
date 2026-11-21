@@ -240,11 +240,13 @@ function showHeading(text, tone = '') {
     countryLabel.dataset.tone = tone;
     return;
   }
-  transitionHeading(questionView, () => {
+  const update = () => {
     countryLabel.textContent = text;
     countryLabel.dataset.tone = tone;
     fitCountry(text);
-  });
+  };
+  if (countryLabel.textContent) transitionHeading(questionView, update);
+  else update();
 }
 
 function clearAnswerCue(hold) {
@@ -436,7 +438,6 @@ nextButton.addEventListener('click', () => {
   if (keyboard && phase === 'question') selection.focus();
 });
 
-fitCountry(countryLabel.textContent);
 showQuestion();
 renderPlayers();
 if (!players.snapshot().seen) playerPanel.open();

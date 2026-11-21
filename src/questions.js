@@ -37,16 +37,15 @@ const questions = entries.map(([id, name, lon, lat, hint]) => ({ id, name, lon, 
 
 export const ROUND_LENGTH = 10;
 
-export function nextDeck(played) {
-  if (!played) return questions.slice(0, ROUND_LENGTH);
+export function nextDeck(played, random = Math.random) {
   // Prefer countries the player hasn't seen, then reshuffle the full pool.
-  let pool = questions.filter(question => !played.has(question.id));
+  let pool = played ? questions.filter(question => !played.has(question.id)) : questions.slice();
   if (pool.length < ROUND_LENGTH) {
     played.clear();
     pool = questions.slice();
   }
   for (let i = pool.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = Math.floor(random() * (i + 1));
     [pool[i], pool[j]] = [pool[j], pool[i]];
   }
   return pool.slice(0, ROUND_LENGTH);

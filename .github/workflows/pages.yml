@@ -28,7 +28,7 @@ jobs:
       - run: npm test
       - run: npm run build
         env:
-          KONTUR_RANKINGS_URL: ${{ vars.KONTUR_RANKINGS_URL }}
+          KONTUR_RANKINGS_URL: ${{ vars.KONTUR_RANKINGS_URL || 'https://evaschool-ranking.headyzebra1.chatgpt.site/api/ranking' }}
       - uses: actions/upload-pages-artifact@v4
         with:
           path: dist
