@@ -6,8 +6,12 @@ const root = new URL('../', import.meta.url);
 const file = path => new URL(path, root);
 const service = process.argv.includes('--service');
 const outputDirectory = service ? 'dist-service' : 'dist';
-const styleFiles = ['src/style.css'];
+const styleFiles = ['src/style.css', 'src/player.css'];
 if (service) styleFiles.push('src/service-panel.css', 'src/service-performance.css');
+const rankingUrl = process.env.KONTUR_RANKINGS_URL?.trim() ?? '';
+if (rankingUrl && new URL(rankingUrl).protocol !== 'https:') {
+  throw new Error('KONTUR_RANKINGS_URL must be an HTTPS URL.');
+}
 const [template, styleSources, bundled] = await Promise.all([
   readFile(file('src/index.html'), 'utf8'),
   Promise.all(styleFiles.map(path => readFile(file(path), 'utf8'))),
@@ -18,6 +22,7 @@ const [template, styleSources, bundled] = await Promise.all([
     minify: true,
     format: 'iife',
     charset: 'utf8',
+    define: { KONTUR_RANKINGS_URL: JSON.stringify(rankingUrl) },
     target: ['safari15.4', 'chrome105', 'firefox110'],
     write: false,
     legalComments: 'none',

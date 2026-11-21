@@ -15,6 +15,9 @@
       <div id="progress" class="progress" role="progressbar" aria-label="Ход игры" aria-valuemin="1" aria-valuemax="10" aria-valuenow="1" aria-valuetext="Задание 1 из 10">
         <div id="progress-track" class="progress-track" aria-hidden="true"></div>
       </div>
+      <button id="player-trigger" class="player-trigger" type="button" aria-haspopup="dialog" aria-controls="player-dialog" aria-expanded="false" aria-label="Игрок и рейтинг">
+        <span dir="auto">Игрок</span>
+      </button>
     </header>
 
     <main class="game">
@@ -46,6 +49,44 @@
       </section>
     </main>
   </div>
+
+  <dialog id="player-dialog" class="player-dialog" aria-labelledby="player-title">
+    <header class="player-dialog-header">
+      <h2 id="player-title" tabindex="-1" autofocus>Игрок и рейтинг</h2>
+      <button id="player-close" class="player-close" type="button" aria-label="Закрыть">×</button>
+    </header>
+    <form id="player-form" class="player-form" novalidate>
+      <label for="player-name">Имя игрока</label>
+      <div class="player-name-row">
+        <input id="player-name" name="player-name" type="text" dir="auto" list="player-profiles" autocomplete="off" enterkeyhint="done" spellcheck="false" required aria-describedby="player-note">
+        <button class="player-select" type="submit">Выбрать</button>
+      </div>
+      <datalist id="player-profiles"></datalist>
+      <p id="player-note" class="player-note">Можно указать псевдоним.</p>
+      <p id="player-error" class="player-error" role="alert" hidden></p>
+    </form>
+
+    <section class="player-ranking" aria-labelledby="player-ranking-title">
+      <div class="player-ranking-heading">
+        <h3 id="player-ranking-title">Рейтинг</h3>
+        <p id="player-record" class="player-record" hidden>Твой рекорд <strong id="player-best">—</strong></p>
+      </div>
+      <p class="player-note">Рекорд — число стран, найденных за игру с первой попытки и без подсказки.</p>
+      <p id="player-ranking-status" class="player-ranking-status" role="status"></p>
+      <div id="player-ranking-list" class="player-ranking-list" role="region" aria-label="Результаты игроков" tabindex="0" hidden>
+        <table class="player-ranking-table" aria-labelledby="player-ranking-title">
+          <thead>
+            <tr><th scope="col">Место</th><th scope="col">Игрок</th><th scope="col">Рекорд</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer class="player-dialog-footer">
+      <button id="player-dismiss" class="player-dismiss" type="button">Играть без имени</button>
+    </footer>
+  </dialog>
 
   <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <symbol id="icon-arrow" viewBox="0 0 24 24"><path d="M3 12h17m-6-6 6 6-6 6"/></symbol>

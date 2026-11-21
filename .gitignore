@@ -2,3 +2,4 @@ node_modules/
 dist/
 dist-service/
 .DS_Store
+.kontur-ranking.sqlite*

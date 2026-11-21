@@ -8,6 +8,7 @@
     "build:service": "node scripts/build.mjs --service",
     "preview": "node scripts/preview.mjs",
     "preview:service": "node scripts/preview.mjs --service",
+    "start:ranking": "node server/start.mjs",
     "test": "node --test"
   },
   "dependencies": {

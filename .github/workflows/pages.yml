@@ -27,6 +27,8 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+        env:
+          KONTUR_RANKINGS_URL: ${{ vars.KONTUR_RANKINGS_URL }}
       - uses: actions/upload-pages-artifact@v4
         with:
           path: dist

@@ -1,4 +1,6 @@
 import { createGlobe } from './globe.js';
+import { mountPlayerPanel } from './player-dialog.js';
+import { createPlayerStore, createRankingClient, localLeaderboard } from './players.js';
 import { nextDeck, ROUND_LENGTH } from './questions.js';
 import { DEFAULT_SETTINGS, EASING } from './settings.js';
 
@@ -51,6 +53,8 @@ const played = new Set();
 let deck = nextDeck();
 let index = 0;
 let results = [];
+let roundScore = 0;
+let questionScores = true;
 let phase = 'question';
 let headingMotion = null;
 let feedbackMotion = null;
@@ -70,6 +74,76 @@ export const renderingDiagnostics = {
   describeRendering: globe.describeRendering,
   selectRenderer: globe.selectRenderer,
 };
+
+const players = createPlayerStore();
+const ranking = createRankingClient(typeof KONTUR_RANKINGS_URL === 'string' ? KONTUR_RANKINGS_URL : '', location);
+let playerToken = players.snapshot().active;
+let sharedEntries = null;
+let rankingLoading = false;
+let rankingError = false;
+let rankingRequest = 0;
+const playerPanel = mountPlayerPanel({
+  onSelect: choosePlayer,
+  onOpen() { void syncRanking(currentPlayer()); },
+  onClose: players.dismiss,
+});
+
+function currentPlayer() {
+  return players.snapshot().profiles.find(player => player.token === playerToken) ?? null;
+}
+
+function renderPlayers() {
+  const { profiles } = players.snapshot();
+  playerPanel.render({
+    player: profiles.find(player => player.token === playerToken) ?? null,
+    profiles,
+    entries: sharedEntries ?? localLeaderboard(profiles, playerToken),
+    shared: Boolean(ranking),
+    loading: rankingLoading,
+    error: rankingError,
+  });
+}
+
+async function syncRanking(player) {
+  if (!ranking) return;
+  const request = ++rankingRequest;
+  rankingLoading = true;
+  rankingError = false;
+  renderPlayers();
+  try {
+    if (player?.shared) players.record(player.token, await ranking.record(player));
+    const entries = await ranking.leaderboard();
+    if (request === rankingRequest) sharedEntries = entries;
+  } catch {
+    if (request === rankingRequest) {
+      sharedEntries = null;
+      rankingError = true;
+    }
+  } finally {
+    if (request === rankingRequest) {
+      rankingLoading = false;
+      renderPlayers();
+    }
+  }
+}
+
+function choosePlayer(name) {
+  const player = players.select(name, Boolean(ranking));
+  const previous = playerToken;
+  playerToken = player.token;
+  if (previous !== playerToken) {
+    if (!previous && phase === 'summary') {
+      saveRoundScore();
+      return;
+    }
+    if (index || phase !== 'question' || !questionScores) {
+      played.clear();
+      startRound(nextDeck());
+    }
+  }
+  renderPlayers();
+  void syncRanking(player);
+}
 
 function message(text = '', tone = '') {
   if (feedback.textContent === text && (feedback.dataset.tone ?? '') === tone) return;
@@ -243,6 +317,7 @@ function setHintOpen(open) {
 
 function showQuestion() {
   phase = 'question';
+  questionScores = true;
   setHintOpen(false);
   showHeading(deck[index].name);
   progress.setAttribute('aria-valuenow', index + 1);
@@ -261,12 +336,14 @@ function guess(id) {
   if (phase !== 'question') return;
   const question = deck[index];
   if (id === question.id) {
+    if (questionScores) roundScore++;
     settle('found');
     globe.paint(id, 'correct');
     showHeading(question.name, 'correct');
     message('Верно!', 'correct');
     startAnswerHold();
   } else {
+    questionScores = false;
     globe.paint(id, 'wrong');
     setHintOpen(false);
     message('Пока мимо. Попробуй ещё раз.', 'wrong');
@@ -288,13 +365,36 @@ function settle(result) {
 
 function showSummary() {
   phase = 'summary';
-  const found = results.filter(result => result === 'found').length;
-  showHeading(`${found} из ${ROUND_LENGTH}`);
+  showHeading(`${roundScore} из ${ROUND_LENGTH}`);
   nextButton.hidden = false;
   nextButton.firstElementChild.textContent = 'Сыграть ещё';
   progress.setAttribute('aria-valuetext', 'Раунд завершён');
   globe.paint();
-  message('Твой результат');
+  saveRoundScore();
+}
+
+function saveRoundScore() {
+  const saved = players.record(playerToken, roundScore);
+  if (saved) {
+    message(saved.improved ? 'Новый личный рекорд!' : `Личный рекорд — ${saved.player.best} из ${ROUND_LENGTH}`);
+    renderPlayers();
+    void syncRanking(saved.player);
+  } else {
+    message('Ответы с первой попытки без подсказки');
+  }
+}
+
+function startRound(questions) {
+  if (answerHold) {
+    pauseAnswerHold();
+    clearAnswerCue(answerHold);
+    answerHold = null;
+  }
+  deck = questions;
+  results = [];
+  index = 0;
+  roundScore = 0;
+  showQuestion();
 }
 
 function advanceAnswer() {
@@ -310,6 +410,7 @@ function advanceAnswer() {
 
 hintButton.addEventListener('click', () => {
   const open = hintOptions.hidden;
+  if (open) questionScores = false;
   setHintOpen(open);
   globe.paint();
   message(open ? deck[index].hint : '');
@@ -328,10 +429,7 @@ skipButton.addEventListener('click', () => {
 nextButton.addEventListener('click', () => {
   const keyboard = nextButton.matches(':focus-visible');
   if (phase === 'summary') {
-    deck = nextDeck(played);
-    results = [];
-    index = 0;
-    showQuestion();
+    startRound(nextDeck(played));
   } else if (phase === 'answer' && results[index] === 'skipped') {
     advanceAnswer();
   }
@@ -340,3 +438,5 @@ nextButton.addEventListener('click', () => {
 
 fitCountry(countryLabel.textContent);
 showQuestion();
+renderPlayers();
+if (!players.snapshot().seen) playerPanel.open();
