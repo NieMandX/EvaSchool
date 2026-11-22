@@ -1,0 +1,65 @@
+.benchmark-panel {
+  --benchmark-inset: min(var(--page-inset), 3.5vw);
+  --benchmark-line: #d4e4e7;
+  position: fixed;
+  z-index: 8;
+  inset-block-start: calc(var(--header-height) + 5px);
+  inset-inline-end: var(--benchmark-inset);
+  inline-size: min(336px, calc(100% - 2 * var(--benchmark-inset)));
+  max-block-size: calc(100svh - var(--header-height) - 13px);
+  padding: 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid #ffffffba;
+  border-radius: 14px;
+  background: #f3f8f8;
+  color: var(--ink);
+  box-shadow: 0 8px 30px #13374624, 0 1px 4px #13374619;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.benchmark-panel h2 { margin: 0; font-size: 16px; font-weight: 800; letter-spacing: -.02em; }
+.benchmark-status,
+.benchmark-message,
+.benchmark-note { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+.benchmark-status { font-weight: 750; }
+.benchmark-status:empty,
+.benchmark-message:empty { margin: 0; }
+.benchmark-progress {
+  display: block;
+  inline-size: 100%;
+  block-size: 8px;
+  margin-block-start: 7px;
+  accent-color: #275667;
+}
+.benchmark-results { margin-block-start: 8px; }
+.benchmark-table {
+  inline-size: 100%;
+  border-spacing: 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.benchmark-table th,
+.benchmark-table td { padding: 7px 4px; text-align: end; vertical-align: top; }
+.benchmark-table thead th { color: var(--muted); font-size: 11px; }
+.benchmark-table :is(th, td):first-child,
+.benchmark-table .benchmark-unavailable { text-align: start; }
+.benchmark-table tbody :is(th, td) { border-block-start: 1px solid var(--benchmark-line); }
+.benchmark-table small { display: block; color: var(--muted); font-size: 10px; white-space: nowrap; }
+.benchmark-table .benchmark-unavailable { color: var(--muted); }
+.benchmark-note { font-size: 11px; }
+.benchmark-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-block-start: 8px; }
+.benchmark-button {
+  min-block-size: 40px;
+  padding: 0 11px;
+  border: 1px solid #c5d8dc;
+  border-radius: 9px;
+  background: #e9f1f2;
+  font-size: 12px;
+  font-weight: 750;
+}
+.benchmark-button:hover { background: #dfecef; }
+.benchmark-primary { border-color: transparent; background: #275667; color: white; }
+.benchmark-primary:hover { background: #204958; }
+.shell.benchmark-mode :is(.prompt, .progress, .player-trigger) { visibility: hidden; }
+.shell[data-benchmark-running] * { pointer-events: none !important; }

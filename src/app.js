@@ -1,4 +1,5 @@
 import { createGlobe } from './globe.js';
+import { mountBenchmark } from './benchmark.js';
 import { mountPlayerPanel } from './player-dialog.js';
 import { createPlayerStore, createRankingClient, localLeaderboard } from './players.js';
 import { nextDeck, ROUND_LENGTH } from './questions.js';
@@ -449,6 +450,16 @@ nextButton.addEventListener('click', () => {
   if (keyboard && phase === 'question') selection.focus();
 });
 
-showQuestion();
-renderPlayers();
-if (!players.snapshot().seen) playerPanel.open();
+if (new URLSearchParams(location.search).get('benchmark') === '1') {
+  globe.setGuessEnabled(false);
+  mountBenchmark({
+    globe,
+    selectRenderer,
+    shell: element('globe').closest('.shell'),
+    resetCamera: () => globe.goTo({ lon: settings.homeLon, lat: settings.homeLat, zoom: settings.homeZoom }, 0),
+  });
+} else {
+  showQuestion();
+  renderPlayers();
+  if (!players.snapshot().seen) playerPanel.open();
+}

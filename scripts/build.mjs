@@ -6,7 +6,7 @@ const root = new URL('../', import.meta.url);
 const file = path => new URL(path, root);
 const service = process.argv.includes('--service');
 const outputDirectory = service ? 'dist-service' : 'dist';
-const styleFiles = ['src/style.css', 'src/player.css'];
+const styleFiles = ['src/style.css', 'src/player.css', 'src/benchmark.css'];
 if (service) styleFiles.push('src/service-panel.css', 'src/service-performance.css');
 const rankingUrl = process.env.KONTUR_RANKINGS_URL?.trim() ?? '';
 if (rankingUrl && new URL(rankingUrl).protocol !== 'https:') {

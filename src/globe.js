@@ -749,6 +749,14 @@ export function createGlobe({
     if (!frame) frame = requestAnimationFrame(render);
   }
 
+  function drawCameraFrame(pose, time) {
+    if (frame) cancelAnimationFrame(frame);
+    Object.assign(camera, pose, { offsetX: 0, offsetY: 0 });
+    stopMotion();
+    cameraDirty = true;
+    render(time);
+  }
+
   function markCamera() {
     cameraDirty = true;
     schedule();
@@ -1175,6 +1183,7 @@ export function createGlobe({
       schedule();
     },
     goTo,
+    drawCameraFrame,
     projectPoint(coordinates) { return width && height ? projectGlobePoint(camera, coordinates, view) : null; },
     coordinatesAt(point) { return width && height ? globeCoordinates(camera, point, view) : null; },
     updateSettings,
