@@ -4,8 +4,16 @@ const INITIAL_SAMPLE_MS = 120;
 const UPDATE_MS = 400;
 const IDLE_MS = 500;
 const EMPTY = '—';
+const PREFERENCE_KEY = 'kontur.renderer.v1';
 
-export function mountRenderStatus(backendLabel, fpsLabel) {
+export function mountRenderStatus(menu, selectRenderer) {
+  const toggle = menu.querySelector('#render-toggle');
+  const backendLabel = menu.querySelector('#render-backend');
+  const fpsLabel = menu.querySelector('#render-fps');
+  const fallback = menu.querySelector('#render-fallback');
+  const choices = [...menu.querySelectorAll('input[name="globe-renderer"]')];
+  let renderer = 'canvas';
+  let preference = 'auto';
   let firstFrame = null;
   let lastFrame = null;
   let intervals = 0;
@@ -32,11 +40,45 @@ export function mountRenderStatus(backendLabel, fpsLabel) {
     else reset();
   }
 
+  function updateFallback() {
+    const message = RENDERER_NAMES[preference] && preference !== renderer
+      ? `Запрошен ${RENDERER_NAMES[preference]}. Сейчас работает ${RENDERER_NAMES[renderer]}.`
+      : '';
+    fallback.textContent = message;
+    fallback.hidden = !message;
+  }
+
   document.addEventListener('visibilitychange', reset);
+  document.addEventListener('pointerdown', event => {
+    if (menu.open && !menu.contains(event.target)) menu.open = false;
+  });
+  menu.addEventListener('keydown', event => {
+    if (!menu.open || event.key !== 'Escape') return;
+    event.stopPropagation();
+    event.preventDefault();
+    menu.open = false;
+    toggle.focus();
+  });
+  for (const choice of choices) {
+    choice.addEventListener('change', () => {
+      try { localStorage.setItem(PREFERENCE_KEY, choice.value); } catch { /* The choice still applies. */ }
+      selectRenderer(choice.value);
+    });
+  }
 
   return {
-    setRenderer(renderer) {
+    savedPreference() {
+      try { return localStorage.getItem(PREFERENCE_KEY); } catch { return null; }
+    },
+    setPreference(next) {
+      preference = next;
+      for (const choice of choices) choice.checked = choice.value === preference;
+      updateFallback();
+    },
+    setRenderer(next) {
+      renderer = next;
       backendLabel.textContent = RENDERER_NAMES[renderer] ?? EMPTY;
+      updateFallback();
       reset();
     },
     recordFrame(time) {

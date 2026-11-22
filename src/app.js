@@ -61,7 +61,7 @@ let headingMotion = null;
 let feedbackMotion = null;
 let answerHold = null;
 
-const renderStatus = mountRenderStatus(element('render-backend'), element('render-fps'));
+const renderStatus = mountRenderStatus(element('render-status'), selectRenderer);
 const globe = createGlobe({
   stage: selection.parentElement,
   canvas: element('globe'),
@@ -71,12 +71,19 @@ const globe = createGlobe({
   onSelect: guess,
   onRenderFrame: renderStatus.recordFrame,
   onRendererChange: renderStatus.setRenderer,
+  rendererPreference: renderStatus.savedPreference(),
 });
+renderStatus.setPreference(globe.describeRendering().preference);
+
+function selectRenderer(preference) {
+  globe.selectRenderer(preference);
+  renderStatus.setPreference(globe.describeRendering().preference);
+}
 
 export const renderingDiagnostics = {
   observeFrames: globe.observeFrames,
   describeRendering: globe.describeRendering,
-  selectRenderer: globe.selectRenderer,
+  selectRenderer,
 };
 
 const players = createPlayerStore();

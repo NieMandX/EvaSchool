@@ -98,6 +98,7 @@ const accents = {
 
 export function createGlobe({
   stage, canvas, overlay, input, onSelect, settings: initialSettings, tileSource, onRenderFrame, onRendererChange,
+  rendererPreference,
 }) {
   const base = canvas.getContext('2d');
   const top = overlay.getContext('2d');
@@ -1155,7 +1156,7 @@ export function createGlobe({
   });
   resize();
 
-  renderer.select(new URLSearchParams(location.search).get('renderer'));
+  renderer.select(new URLSearchParams(location.search).get('renderer') ?? rendererPreference);
 
   return {
     paint(id, type) {

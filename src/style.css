@@ -64,14 +64,14 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
 .render-status {
   --render-inset: min(var(--page-inset), 3vw);
   --progress-half: calc(5 * var(--progress-dot) + 4.5 * var(--progress-gap));
+  --render-room: max(0px, calc(50% - var(--render-inset) - var(--progress-half) + min(0px, var(--progress-shift)) - 6px));
   position: absolute;
   inset-inline-start: var(--render-inset);
   inset-block-start: 50%;
+  z-index: 1;
   transform: translateY(-50%);
-  display: flex;
-  align-items: baseline;
-  gap: .45em;
-  max-inline-size: max(0px, calc(50% - var(--render-inset) - var(--progress-half) + min(0px, var(--progress-shift)) - 6px));
+  min-inline-size: min(44px, var(--render-room));
+  max-inline-size: var(--render-room);
   color: var(--muted);
   font-size: clamp(10px, 3vw, 12px);
   font-weight: 750;
@@ -79,6 +79,35 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
   line-height: 1.15;
   pointer-events: none;
 }
+.render-status-summary {
+  display: flex;
+  align-items: center;
+  gap: .4em;
+  min-block-size: min(44px, var(--header-height));
+  padding-inline-end: 3px;
+  border-radius: 8px;
+  list-style: none;
+  cursor: pointer;
+  touch-action: manipulation;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
+}
+.render-status-summary::-webkit-details-marker { display: none; }
+.render-status-summary:hover,
+.render-status[open] .render-status-summary { color: var(--ink); }
+.render-status-summary:focus-visible,
+.render-option input:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.render-status-summary::after {
+  content: '';
+  flex: none;
+  inline-size: .34em;
+  block-size: .34em;
+  margin-inline-start: 1px;
+  border-inline-end: 1.5px solid currentColor;
+  border-block-end: 1.5px solid currentColor;
+  transform: translateY(-1px) rotate(45deg);
+}
+.render-status[open] .render-status-summary::after { transform: translateY(1px) rotate(225deg); }
 .render-status-value {
   min-inline-size: 0;
   max-inline-size: 100%;
@@ -87,8 +116,70 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
   white-space: nowrap;
 }
 @media (max-width: 420px) {
-  .render-status { flex-direction: column; align-items: flex-start; gap: 2px; }
+  .render-status-summary {
+    display: grid;
+    grid-template-columns: minmax(0, max-content) auto;
+    align-content: center;
+    justify-content: start;
+    gap: 2px .3em;
+    padding-inline-end: 0;
+  }
+  #render-backend { grid-column: 1 / -1; }
   .render-status-divider { display: none; }
+}
+.render-menu {
+  position: absolute;
+  inset-block-start: calc(100% + 2px);
+  inset-inline-start: 0;
+  inline-size: min(215px, calc(100vw - var(--render-inset) - 8px));
+  max-block-size: min(280px, calc(100svh - var(--header-height) - 12px));
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 11px 9px 8px;
+  border: 1px solid #ffffffb3;
+  border-radius: 13px;
+  background: #f3f8f8;
+  color: var(--ink);
+  box-shadow: 0 8px 30px #13374626, 0 1px 4px #13374616;
+  font-size: 13px;
+  line-height: 1.4;
+  pointer-events: auto;
+}
+.render-status:not([open]) > .render-menu { display: none; }
+.render-options {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.render-options legend { margin: 0 0 4px; padding-inline: 7px; font-size: 12px; }
+.render-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-block-size: 40px;
+  padding-inline: 7px;
+  border-radius: 7px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.render-option:hover,
+.render-option:focus-within { background: #e5eff0; }
+.render-option input {
+  flex: none;
+  inline-size: 16px;
+  block-size: 16px;
+  margin: 0;
+  accent-color: #275667;
+  cursor: pointer;
+}
+.render-fallback {
+  margin: 6px 7px 3px;
+  padding-block-start: 7px;
+  border-block-start: 1px solid #d2e2e5;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
 }
 .progress { transform: translateX(var(--progress-shift)); }
 .progress-track { display: flex; gap: var(--progress-gap); }
