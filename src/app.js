@@ -2,6 +2,7 @@ import { createGlobe } from './globe.js';
 import { mountPlayerPanel } from './player-dialog.js';
 import { createPlayerStore, createRankingClient, localLeaderboard } from './players.js';
 import { nextDeck, ROUND_LENGTH } from './questions.js';
+import { mountRenderStatus } from './render-status.js';
 import { DEFAULT_SETTINGS, EASING } from './settings.js';
 
 let settings = DEFAULT_SETTINGS;
@@ -60,6 +61,7 @@ let headingMotion = null;
 let feedbackMotion = null;
 let answerHold = null;
 
+const renderStatus = mountRenderStatus(element('render-backend'), element('render-fps'));
 const globe = createGlobe({
   stage: selection.parentElement,
   canvas: element('globe'),
@@ -67,6 +69,8 @@ const globe = createGlobe({
   input: element('globe-input'),
   settings,
   onSelect: guess,
+  onRenderFrame: renderStatus.recordFrame,
+  onRendererChange: renderStatus.setRenderer,
 });
 
 export const renderingDiagnostics = {

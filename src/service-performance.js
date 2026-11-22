@@ -1,10 +1,10 @@
 import { mountServiceWindow } from './service-window.js';
+import { RENDERER_NAMES as renderers } from './render-status.js';
 
 const WINDOW_MS = 1000;
 const IDLE_MS = 350;
 const REFRESH_MS = 250;
 const DASH = '—';
-const renderers = { webgpu: 'WebGPU', webgl: 'WebGL', canvas: 'Canvas 2D' };
 const wholeNumber = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 });
 const decimal = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 });
 

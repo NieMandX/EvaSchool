@@ -48,6 +48,9 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
   flex-direction: column;
 }
 .masthead {
+  --progress-dot: clamp(7px, .88vw, 11px);
+  --progress-gap: clamp(7px, 1.05vw, 14px);
+  --progress-shift: clamp(calc(-1 * var(--page-inset)), var(--header-x, 0px), var(--page-inset));
   height: var(--header-height);
   display: flex;
   justify-content: center;
@@ -58,14 +61,41 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
   pointer-events: none;
   transform: translateY(var(--header-y, 0px));
 }
-.progress {
-  transform: translateX(clamp(calc(-1 * var(--page-inset)), var(--header-x, 0px), var(--page-inset)));
+.render-status {
+  --render-inset: min(var(--page-inset), 3vw);
+  --progress-half: calc(5 * var(--progress-dot) + 4.5 * var(--progress-gap));
+  position: absolute;
+  inset-inline-start: var(--render-inset);
+  inset-block-start: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: baseline;
+  gap: .45em;
+  max-inline-size: max(0px, calc(50% - var(--render-inset) - var(--progress-half) + min(0px, var(--progress-shift)) - 6px));
+  color: var(--muted);
+  font-size: clamp(10px, 3vw, 12px);
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+  pointer-events: none;
 }
-.progress-track { display: flex; gap: clamp(7px, 1.05vw, 14px); }
+.render-status-value {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 420px) {
+  .render-status { flex-direction: column; align-items: flex-start; gap: 2px; }
+  .render-status-divider { display: none; }
+}
+.progress { transform: translateX(var(--progress-shift)); }
+.progress-track { display: flex; gap: var(--progress-gap); }
 .progress-step {
   position: relative;
   overflow: hidden;
-  width: clamp(7px, .88vw, 11px);
+  width: var(--progress-dot);
   aspect-ratio: 1;
   border-radius: 50%;
   background: var(--line);

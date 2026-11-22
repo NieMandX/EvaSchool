@@ -12,6 +12,11 @@
 <body>
   <div class="shell">
     <header class="masthead">
+      <div id="render-status" class="render-status" role="group" aria-label="Графика глобуса">
+        <span id="render-backend" class="render-status-value">—</span>
+        <span class="render-status-divider" aria-hidden="true">·</span>
+        <span class="render-status-value"><span class="sr-only">Частота кадров: </span><span id="render-fps">—</span> FPS</span>
+      </div>
       <div id="progress" class="progress" role="progressbar" aria-label="Ход игры" aria-valuemin="1" aria-valuemax="10" aria-valuenow="1" aria-valuetext="Задание 1 из 10">
         <div id="progress-track" class="progress-track" aria-hidden="true"></div>
       </div>

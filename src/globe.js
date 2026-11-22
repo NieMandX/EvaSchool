@@ -96,7 +96,9 @@ const accents = {
   reveal: '#ecd7aa',
 };
 
-export function createGlobe({ stage, canvas, overlay, input, onSelect, settings: initialSettings, tileSource }) {
+export function createGlobe({
+  stage, canvas, overlay, input, onSelect, settings: initialSettings, tileSource, onRenderFrame, onRendererChange,
+}) {
   const base = canvas.getContext('2d');
   const top = overlay.getContext('2d');
   const terrainCanvas = document.createElement('canvas');
@@ -165,8 +167,10 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
     },
   });
   stage.dataset.renderer = 'canvas';
+  onRendererChange?.(stage.dataset.renderer);
   const renderer = createGlobeRenderer(canvas, name => {
     stage.dataset.renderer = name;
+    onRendererChange?.(name);
     shoreMask = apertureMask = null;
     resizeShadow();
     terrainDirty = overlayDirty = true;
@@ -679,6 +683,7 @@ export function createGlobe({ stage, canvas, overlay, input, onSelect, settings:
         drawAccent(hover, 'hover', lift.level, lift.lastElevation);
       }
       overlayDirty = animating;
+      onRenderFrame?.(time);
     }
     return animating || Boolean(pendingHover);
   }
