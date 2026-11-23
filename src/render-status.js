@@ -1,4 +1,4 @@
-export const RENDERER_NAMES = { webgpu: 'WebGPU', webgl: 'WebGL', canvas: 'Canvas 2D' };
+export const RENDERER_NAMES = { webgpu: 'WebGPU', webgl: 'WebGL' };
 
 const INITIAL_SAMPLE_MS = 120;
 const UPDATE_MS = 400;
@@ -12,7 +12,7 @@ export function mountRenderStatus(menu, selectRenderer) {
   const fpsLabel = menu.querySelector('#render-fps');
   const fallback = menu.querySelector('#render-fallback');
   const choices = [...menu.querySelectorAll('input[name="globe-renderer"]')];
-  let renderer = 'canvas';
+  let renderer = 'loading';
   let preference = 'auto';
   let firstFrame = null;
   let lastFrame = null;
@@ -41,7 +41,8 @@ export function mountRenderStatus(menu, selectRenderer) {
   }
 
   function updateFallback() {
-    const message = RENDERER_NAMES[preference] && preference !== renderer
+    const message = renderer === 'unavailable' ? 'Графический режим недоступен.'
+      : RENDERER_NAMES[preference] && RENDERER_NAMES[renderer] && preference !== renderer
       ? `Запрошен ${RENDERER_NAMES[preference]}. Сейчас работает ${RENDERER_NAMES[renderer]}.`
       : '';
     fallback.textContent = message;
@@ -77,7 +78,7 @@ export function mountRenderStatus(menu, selectRenderer) {
     },
     setRenderer(next) {
       renderer = next;
-      backendLabel.textContent = RENDERER_NAMES[renderer] ?? EMPTY;
+      backendLabel.textContent = RENDERER_NAMES[renderer] ?? (renderer === 'unavailable' ? 'Недоступен' : EMPTY);
       updateFallback();
       reset();
     },

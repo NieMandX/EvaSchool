@@ -1,40 +1,56 @@
-import { createGlShoreShadow } from './globe-shadow-gl.js';
-import { createGpuShoreShadow } from './globe-shadow-gpu.js';
+import { loadGlobeMesh } from 'globe-mesh';
+import { createWebGlGlobe } from './globe-webgl.js';
+import { createWebGpuGlobe } from './globe-webgpu.js';
 
-const factories = { webgpu: createGpuShoreShadow, webgl: createGlShoreShadow };
+const factories = { webgpu: createWebGpuGlobe, webgl: createWebGlGlobe };
 
-export function createGlobeRenderer(anchor, onChange) {
+export function createGlobeRenderer(container, onChange) {
   let active = null;
   let preference = 'auto';
   let generation = 0;
   let pending = false;
+  let status = 'loading';
+
+  function report(name) {
+    if (name === status) return;
+    status = name;
+    onChange(name);
+  }
 
   function show(next) {
-    if (active === next) return;
     const previous = active;
     active = next;
     previous?.surface.remove();
     previous?.driver.dispose();
-    if (active) anchor.after(active.surface);
-    onChange(active?.name ?? 'canvas');
+    if (active) {
+      container.append(active.surface);
+      report(active.name);
+    }
   }
 
   async function probe(order, generationAtStart) {
     const [name, ...fallback] = order;
     if (generationAtStart !== generation) return;
     pending = Boolean(name);
-    if (!name) return;
+    if (!name) {
+      report('unavailable');
+      return;
+    }
     const surface = document.createElement('canvas');
     surface.setAttribute('aria-hidden', 'true');
     let failed = false;
-    const candidate = { name, surface, driver: null, fail() {
-      failed = true;
-      if (active !== candidate) return;
-      show(null);
-      void probe(fallback, generationAtStart);
-    } };
+    const candidate = {
+      name, surface, driver: null,
+      fail() {
+        failed = true;
+        if (active !== candidate) return;
+        show(null);
+        report('loading');
+        void probe(fallback, generationAtStart);
+      },
+    };
     try {
-      candidate.driver = await factories[name](surface, candidate.fail);
+      candidate.driver = await factories[name](surface, loadGlobeMesh(), candidate.fail);
     } catch {
       // Context creation can throw on browsers that block graphics acceleration.
       failed = true;
@@ -55,10 +71,12 @@ export function createGlobeRenderer(anchor, onChange) {
     get preference() { return preference; },
     get pending() { return pending; },
     select(mode) {
-      preference = ['canvas', 'webgl', 'webgpu'].includes(mode) ? mode : 'auto';
-      const order = preference === 'canvas' ? [] : preference === 'webgl' ? ['webgl'] : ['webgpu', 'webgl'];
+      preference = mode === 'webgl' || mode === 'webgpu' ? mode : 'auto';
+      const order = preference === 'webgl' ? ['webgl'] : ['webgpu', 'webgl'];
       const nextGeneration = ++generation;
+      pending = true;
       show(null);
+      report('loading');
       void probe(order, nextGeneration);
     },
   };

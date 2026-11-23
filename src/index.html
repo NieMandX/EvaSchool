@@ -59,10 +59,12 @@
 
       <section class="stage" aria-label="Игра на глобусе">
         <p id="keyboard-help" class="sr-only">Потяни глобус, чтобы повернуть его, и нажми на страну. С клавиатуры вращай глобус стрелками, меняй масштаб клавишами плюс и минус. Нажми Enter, чтобы выбрать страну в центре. Home возвращает начальный вид.</p>
-        <canvas id="globe" aria-hidden="true"></canvas>
-        <canvas id="selection" tabindex="0" aria-label="Интерактивный глобус" aria-describedby="keyboard-help"></canvas>
+        <div id="globe" aria-hidden="true"></div>
+        <div id="ocean-labels" class="ocean-labels" aria-hidden="true"></div>
+        <div id="selection" tabindex="0" role="img" aria-label="Интерактивный глобус" aria-describedby="keyboard-help"></div>
         <span class="crosshair" aria-hidden="true"></span>
         <div id="globe-input" class="globe-input" aria-hidden="true"></div>
+        <p class="globe-unavailable" role="status">Для глобуса нужен браузер с поддержкой WebGL или WebGPU.</p>
       </section>
     </main>
   </div>

@@ -1,5 +1,3 @@
-export const defaultShadowColor = [22 / 255, 56 / 255, 75 / 255, 122 / 255];
-
 export function shoreGaussian(maskSize, cssSize, horizontal, blur) {
   const sigma = blur > 0 ? Math.max(.25, Math.min(8, blur * .5 * maskSize / cssSize)) : 0;
   const radius = Math.ceil(sigma * 3);

@@ -106,6 +106,7 @@ export function mountBenchmark({ globe, selectRenderer, shell, resetCamera, comp
             ({ renderer, width, height } = actual);
             return true;
           }
+          if (actual.renderer === 'unavailable') throw new Error('WebGL и WebGPU недоступны для замера.');
           if (time >= deadline) throw new Error('Рендерер ещё запускается. Повтори замер через несколько секунд.');
           return false;
         });
@@ -124,8 +125,9 @@ export function mountBenchmark({ globe, selectRenderer, shell, resetCamera, comp
           if (current.renderer !== mode || current.preference !== mode) selectRenderer(mode);
           const deadline = performance.now() + RENDERER_WAIT_MS;
           await runFrames(signal, time => {
-            const ready = globe.describeRendering().renderer === mode;
-            if (!ready && time >= deadline) pass.unavailable = 'Режим недоступен';
+            const actual = globe.describeRendering();
+            const ready = actual.renderer === mode;
+            if (!ready && (!actual.rendererPending || time >= deadline)) pass.unavailable = 'Режим недоступен';
             return ready || Boolean(pass.unavailable);
           });
           if (pass.unavailable) continue;

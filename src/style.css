@@ -213,7 +213,44 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
   display: block;
   pointer-events: none;
 }
+#selection, .ocean-labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
 #selection { outline-offset: -3px; }
+.ocean-labels {
+  visibility: hidden;
+  color: #23434f;
+  font-weight: 750;
+  line-height: 1.22;
+}
+.ocean-label {
+  position: absolute;
+  inset: 0 auto auto 0;
+  display: grid;
+  justify-items: center;
+  white-space: nowrap;
+  opacity: 0;
+}
+.globe-unavailable {
+  display: none;
+  position: absolute;
+  inset: 25% 18% auto;
+  text-align: center;
+  color: var(--muted);
+}
+.stage[data-renderer="unavailable"] .globe-unavailable { display: block; }
+.title-metrics {
+  position: fixed;
+  inset: 0 100% auto auto;
+  width: max-content;
+  visibility: hidden;
+  pointer-events: none;
+  font: 800 100px Manrope, system-ui, sans-serif;
+  white-space: nowrap;
+  letter-spacing: normal;
+}
 .globe-input {
   position: absolute;
   inset: 0;

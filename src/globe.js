@@ -1,12 +1,12 @@
-import { geoBounds, geoContains, geoDistance, geoGraticule, geoOrthographic, geoPath } from 'd3-geo';
-import { feature, mesh } from 'topojson-client';
+import { geoDistance, geoOrthographic, geoPath } from 'd3-geo';
+import { feature } from 'topojson-client';
 import atlas from './assets/countries.json';
-import { mapParts, viewCap, visibleParts } from './map-geometry.js';
+import { viewCap } from './map-geometry.js';
+import { createCountryIndex, tileLineVertices } from './globe-geography.js';
 import {
   anchorGlobe, globeCoordinates, globePoint, moveGlobe, projectGlobePoint,
   recordGlobeMotion, releaseGlobeMotion, wrapLongitude,
 } from './globe-camera.js';
-import { boundPath, createGlobeProjector, prepareMapPart } from './globe-projection.js';
 import { createGlobeRenderer } from './globe-renderer.js';
 import { createGlobeTiles } from './globe-tiles.js';
 import { createOceanLabels } from './ocean-labels.js';
@@ -14,55 +14,15 @@ import { createOceanLabels } from './ocean-labels.js';
 const MIN_ZOOM = 0.85;
 const MAX_ZOOM = 4.5;
 const MAX_PIXELS = 2_100_000;
-const LITE_SHORE_MASK_SCALE = .32;
-const LITE_SHORE_OUTPUT_SCALE = .5;
 const DEG = 180 / Math.PI;
 const countries = feature(atlas, atlas.objects.countries).features;
 const byId = new Map();
 for (const country of countries) {
   const group = byId.get(country.id);
   if (group) group.features.push(country);
-  else byId.set(country.id, { type: 'FeatureCollection', features: [country] });
+  else byId.set(country.id, { type: 'FeatureCollection', id: country.id, features: [country] });
 }
-const hitRegions = countries.map(country => ({ country, bounds: geoBounds(country) }));
-
-const continentFields = {
-  eurasia: 'landEurasia',
-  africa: 'landAfrica',
-  'north-america': 'landNorthAmerica',
-  'south-america': 'landSouthAmerica',
-  oceania: 'landOceania',
-  antarctica: 'landAntarctica',
-};
-
-const preparedParts = new WeakMap();
-function prepareMapGeometry(geometry) {
-  const result = mapParts(geometry);
-  for (const { shape } of result.parts) preparedParts.set(shape, prepareMapPart(shape));
-  return result;
-}
-
-const continents = Object.entries(continentFields).map(([id, field]) => ({
-  field, geometry: prepareMapGeometry(feature(atlas, atlas.objects[id]).geometry),
-}));
-// Shared national borders only. Coastlines are defined by the land fill and its shadow.
-const borders = prepareMapGeometry(mesh(atlas, atlas.objects.countries, (a, b) => a !== b && a.id !== b.id));
-const grid = geoGraticule().step([15, 15]).stepMajor([90, 90]).precision(5)();
-const preparedCountries = new WeakMap();
-
-function countryPolygons(country) {
-  const cached = preparedCountries.get(country);
-  if (cached) return cached;
-  const features = country.type === 'FeatureCollection' ? country.features : [country];
-  const polygons = features.flatMap(({ geometry }) => geometry.type === 'MultiPolygon'
-    ? geometry.coordinates.map(coordinates => ({ type: 'Polygon', coordinates }))
-    : [geometry]);
-  for (const shape of polygons) {
-    if (!preparedParts.has(shape)) preparedParts.set(shape, prepareMapPart(shape));
-  }
-  preparedCountries.set(country, polygons);
-  return polygons;
-}
+const countryAtCoordinates = createCountryIndex(countries);
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const pointDistance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -72,51 +32,28 @@ const BORDER_TOLERANCE = 1.8;
 const BORDER_SETTLE = 65;
 const PINCH_MIN_SPAN = 12;
 
-const paperFace = [[253, 252, 248], [249, 248, 243]];
-const faceColor = (paper, green, tint) =>
-  `rgb(${paper.map((channel, i) => Math.round(channel + (green[i] - channel) * tint)).join(', ')})`;
-const rgbChannels = hex => [1, 3, 5].map(index => parseInt(hex.slice(index, index + 2), 16));
-const withAlpha = (hex, alpha) => hex + Math.round(clamp(alpha, 0, 255)).toString(16).padStart(2, '0');
+const paperLight = [253 / 255, 252 / 255, 248 / 255];
+const paperDark = [249 / 255, 248 / 255, 243 / 255];
+const accents = {
+  still: [219 / 255, 233 / 255, 231 / 255],
+  wrong: [228 / 255, 200 / 255, 188 / 255],
+  reveal: [236 / 255, 215 / 255, 170 / 255],
+};
+const color = hex => [1, 3, 5].map(index => parseInt(hex.slice(index, index + 2), 16) / 255);
+const blend = (start, end, t) => start.map((channel, index) => channel + (end[index] - channel) * t);
 const homePose = ({ homeLon, homeLat, homeZoom }) => ({ lon: homeLon, lat: homeLat, zoom: homeZoom });
 
-function paintColors(settings) {
-  const shoreAlpha = Math.round(255 * settings.shoreOpacity / 100);
-  return {
-    correct: [rgbChannels(settings.correctLight), rgbChannels(settings.correctDark)],
-    grid: withAlpha('#325c6d', 255 * settings.gridOpacity / 100),
-    border: withAlpha(settings.borderColor, 255 * settings.borderOpacity / 100),
-    shore: withAlpha(settings.shoreColor, shoreAlpha),
-    acceleratedShore: [...rgbChannels(settings.shoreColor), shoreAlpha].map(channel => channel / 255),
-    accentAmbient: withAlpha('#153645', 92 * settings.hoverShadow / 100),
-    accentNear: withAlpha('#183740', 46 * settings.hoverShadow / 100),
-  };
-}
-
-const accents = {
-  hover: '#f9f8f3',
-  wrong: '#e4c8bc',
-  reveal: '#ecd7aa',
-};
-
 export function createGlobe({
-  stage, canvas, overlay, input, onSelect, settings: initialSettings, tileSource, onRenderFrame, onRendererChange,
-  rendererPreference, initialQuality,
+  stage, canvas, overlay, input, labelLayer, onSelect, settings: initialSettings, tileSource,
+  onRenderFrame, onRendererChange, rendererPreference, initialQuality,
 }) {
-  const base = canvas.getContext('2d');
-  const top = overlay.getContext('2d');
-  const terrainCanvas = document.createElement('canvas');
-  terrainCanvas.setAttribute('aria-hidden', 'true');
-  overlay.before(terrainCanvas);
-  const terrain = terrainCanvas.getContext('2d');
-  const projection = geoOrthographic().clipAngle(90);
   const maxZoom = clamp(tileSource?.maxCameraZoom ?? MAX_ZOOM, MAX_ZOOM, 2 ** 20);
-  const contourProjection = geoOrthographic().clipAngle(90).translate([0, 0]).precision(.38 / MAX_ZOOM);
-  const contourPath = geoPath(contourProjection);
-  const detailPath = tileSource && geoPath(projection.precision(.35));
+  const accentProjection = geoOrthographic().clipAngle(90).scale(1).translate([0, 0]).precision(.0003);
+  const accentBounds = geoPath(accentProjection);
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
   let settings = { ...initialSettings };
   let quality = initialQuality === 'lite' ? 'lite' : 'standard';
-  let colors = paintColors(settings);
+  let correctColors = [color(settings.correctLight), color(settings.correctDark)];
   const camera = { ...homePose(settings), offsetX: 0, offsetY: 0 };
   const view = { x: 0, y: 0, radius: 1 };
   const pointers = new Map();
@@ -136,10 +73,7 @@ export function createGlobe({
   let layoutTop = 0;
   let frame = 0;
   let cameraDirty = true;
-  let waterDirty = true;
-  let terrainDirty = true;
   let overlayDirty = true;
-  let overlayPainted = false;
   let zoomTarget = camera.zoom;
   let zoomAnchor = null;
   let lastFrame = null;
@@ -155,37 +89,44 @@ export function createGlobe({
   let highlight = null;
   let acceptsGuess = true;
   let keyboard = false;
-  let projected = null;
   let accentPaths = new WeakMap();
   let lastTick = -Infinity;
   let lastHit = null;
-  let paints;
-  let shoreMask = null;
-  let apertureMask = null;
-  let canvasShore = null;
-  let shoreDirty = true;
   let frameObserver = null;
-  let detail = null;
+  let bufferWidth = 0;
+  let bufferHeight = 0;
+  let detailVertices = null;
   const tiles = tileSource && createGlobeTiles({
     ...tileSource,
     onChange(entries) {
-      if (detail?.entries === entries) return;
-      terrainDirty = true;
+      detailVertices = tileLineVertices(entries);
+      renderer.active?.driver.setDetail(detailVertices);
+      overlayDirty = true;
       schedule();
     },
   });
-  stage.dataset.renderer = 'canvas';
-  onRendererChange?.(stage.dataset.renderer);
+
+  const oceanLabels = createOceanLabels(labelLayer, (px, py) => {
+    const coordinates = globeCoordinates(camera, { x: px, y: py }, view);
+    return coordinates && !countryAtCoordinates(coordinates);
+  });
+
+  stage.dataset.renderer = 'loading';
+  onRendererChange?.('loading');
   const renderer = createGlobeRenderer(canvas, name => {
     stage.dataset.renderer = name;
     onRendererChange?.(name);
-    shoreMask = apertureMask = null;
-    resizeShadow();
-    terrainDirty = overlayDirty = true;
+    const active = renderer.active;
+    if (active && bufferWidth && bufferHeight) {
+      if (active.driver.resize(bufferWidth, bufferHeight, ratio) === false) {
+        active.fail();
+        return;
+      }
+      if (detailVertices) active.driver.setDetail(detailVertices);
+    }
+    cameraDirty = overlayDirty = true;
     schedule();
   });
-  const oceanLabels = createOceanLabels((px, py) =>
-    !terrain.isPointInPath(projected.land, (px - x) / camera.zoom, (py - y) / camera.zoom));
 
   function findCountry(point) {
     if (lastHit?.x === point.x && lastHit.y === point.y) return lastHit.country;
@@ -197,264 +138,7 @@ export function createGlobe({
   function countryAt(point) {
     if (point.y < mapTop - 9 || point.y > mapBottom) return null;
     const coordinates = globeCoordinates(camera, point, view);
-    if (!coordinates) return null;
-    const [lon, lat] = coordinates;
-    for (const { country, bounds: [[west, south], [east, north]] } of hitRegions) {
-      if (lat < south || lat > north) continue;
-      const inside = west <= east ? lon >= west && lon <= east : lon >= west || lon <= east;
-      if (inside && geoContains(country, coordinates)) return country;
-    }
-    return null;
-  }
-
-  function updateProjection() {
-    radius = naturalRadius * camera.zoom;
-    projection.rotate([-camera.lon, -camera.lat, 0]).scale(radius).translate([x, y]);
-    lastHit = null;
-  }
-
-  function projectPath(shape) {
-    const path = new Path2D();
-    contourPath.context(path)(shape);
-    return path;
-  }
-
-  function projectParts(shapes, projector, path = new Path2D()) {
-    for (const shape of shapes) {
-      if (!projector.append(path, preparedParts.get(shape))) contourPath.context(path)(shape);
-    }
-    return path;
-  }
-
-  function projectMap() {
-    const { lon, lat, zoom } = camera;
-    if (projected?.lon === lon && projected.lat === lat && zoom >= projected.minimumZoom) return;
-    // Project at a fixed scale and reuse the same paths throughout a zoom.
-    // The clip extent covers a little more than the currently visible view.
-    const minimumZoom = Math.max(MIN_ZOOM, Math.floor(zoom) - .15);
-    const coverage = viewCap(lon, lat, naturalRadius * minimumZoom, homeX + maxOffsetX, homeY + maxOffsetY,
-      width + 2 * maxOffsetX, height + 2 * maxOffsetY);
-    const clip = [
-      [(-3 - homeX - maxOffsetX) / minimumZoom, (-3 - homeY - maxOffsetY) / minimumZoom],
-      [(width + 3 - homeX + maxOffsetX) / minimumZoom, (height + 3 - homeY + maxOffsetY) / minimumZoom],
-    ];
-    const [[left, top], [right, bottom]] = clip;
-    const discFits = left <= -naturalRadius && top <= -naturalRadius && right >= naturalRadius && bottom >= naturalRadius;
-    contourProjection
-      .rotate([-lon, -lat, 0])
-      .scale(naturalRadius)
-      .clipExtent(discFits ? null : clip);
-    const projector = createGlobeProjector(lon, lat, naturalRadius);
-    const land = new Path2D();
-    const faces = continents.flatMap(({ field, geometry }) => {
-      const visible = visibleParts(geometry, coverage);
-      if (!visible.geometries.length) return [];
-      const path = projectParts(visible.geometries, projector);
-      land.addPath(path);
-      return [{ field, path }];
-    });
-    const outlines = projectParts(visibleParts(borders, coverage).geometries, projector);
-    projected = {
-      lon, lat, minimumZoom, projector, land, waterMask: null,
-      continents: faces,
-      outlines,
-      grid: projectPath(grid),
-    };
-    accentPaths = new WeakMap();
-  }
-
-  function updatePaints() {
-    const sea = base.createRadialGradient(x - radius * .34, y - radius * .43, radius * .07, x, y, radius * 1.12);
-    sea.addColorStop(0, settings.waterLight);
-    sea.addColorStop(.63, settings.waterMid);
-    sea.addColorStop(1, settings.waterDark);
-    paints = { sea, radius, x, y };
-  }
-
-  function drawWater() {
-    base.clearRect(0, 0, width, height);
-    if (paints?.radius !== radius || paints.x !== x || paints.y !== y) updatePaints();
-
-    // Keep the contact shadow independent of the fluctuating geographic paths.
-    const shadowY = y + radius * .984;
-    if (shadowY < height + 30) {
-      base.save();
-      base.translate(x + radius * .08, shadowY);
-      base.scale(radius * .87, Math.max(10, radius * .09));
-      const shadow = base.createRadialGradient(0, 0, 0, 0, 0, 1);
-      shadow.addColorStop(0, '#29465442');
-      shadow.addColorStop(1, '#29465400');
-      base.fillStyle = shadow;
-      base.fillRect(-1, -1, 2, 2);
-      base.restore();
-    }
-
-    base.save();
-    base.beginPath();
-    base.arc(x, y, radius, 0, Math.PI * 2);
-    base.fillStyle = paints.sea;
-    base.fill();
-    base.clip();
-
-    base.save();
-    base.translate(x, y);
-    base.scale(camera.zoom, camera.zoom);
-    base.lineJoin = 'round';
-    base.lineCap = 'round';
-    base.lineWidth = .64 / camera.zoom;
-    if (settings.gridOpacity) {
-      base.strokeStyle = colors.grid;
-      base.setLineDash([3.4 / camera.zoom, 3.3 / camera.zoom]);
-      base.stroke(projected.grid);
-    }
-    base.restore();
-    terrain.save();
-    terrain.resetTransform();
-    oceanLabels.draw(base, {
-      projection, center: [camera.lon, camera.lat],
-      x, y, radius, naturalRadius, width, mapTop, mapBottom,
-    });
-    terrain.restore();
-    base.restore();
-
-    base.beginPath();
-    base.arc(x, y, radius, 0, Math.PI * 2);
-    base.lineWidth = .8;
-    base.strokeStyle = '#42657174';
-    base.stroke();
-  }
-
-  function drawTerrain() {
-    terrain.clearRect(0, 0, width, height);
-    terrain.save();
-    terrain.beginPath();
-    terrain.arc(x, y, radius, 0, Math.PI * 2);
-    terrain.clip();
-    terrain.translate(x, y);
-    terrain.scale(camera.zoom, camera.zoom);
-
-    // Keep the Canvas 2D shore shadow with the terrain so lifted countries can clear it.
-    const canvasShadow = !renderer.active && settings.shoreOpacity;
-    if (canvasShadow && quality === 'lite') drawLiteCanvasShore();
-    terrain.save();
-    terrain.fillStyle = settings.landEurasia;
-    if (canvasShadow && quality === 'standard') {
-      terrain.shadowColor = colors.shore;
-      terrain.shadowBlur = settings.shoreBlur * ratio;
-      terrain.shadowOffsetY = settings.shoreLift * ratio;
-    }
-    terrain.fill(projected.land);
-    terrain.restore();
-
-    for (const { field, path } of projected.continents) {
-      terrain.fillStyle = settings[field];
-      terrain.fill(path);
-    }
-    if (settings.borderWidth && settings.borderOpacity) {
-      terrain.lineCap = 'round';
-      terrain.lineJoin = 'round';
-      terrain.lineWidth = settings.borderWidth / camera.zoom;
-      terrain.strokeStyle = colors.border;
-      terrain.stroke(projected.outlines);
-    }
-    terrain.restore();
-    if (tiles) drawDetail();
-  }
-
-  function drawDetail() {
-    const entries = tiles.visible();
-    if (!entries.length) return;
-    if (detail?.entries !== entries) {
-      const path = new Path2D();
-      detailPath.context(path);
-      for (const { data } of entries) {
-        if (data) detailPath(data);
-      }
-      detail = { entries, path };
-    }
-    terrain.save();
-    terrain.lineCap = terrain.lineJoin = 'round';
-    terrain.lineWidth = 1;
-    terrain.strokeStyle = colors.border;
-    terrain.stroke(detail.path);
-    terrain.restore();
-  }
-
-  function makeShadowMask(maxScale) {
-    const surface = document.createElement('canvas');
-    const scale = Math.min(maxScale, 750 / Math.max(width, height));
-    surface.width = Math.max(1, Math.round(width * scale));
-    surface.height = Math.max(1, Math.round(height * scale));
-    const context = surface.getContext('2d');
-    context.setTransform(surface.width / width, 0, 0, surface.height / height, 0, 0);
-    return context;
-  }
-
-  function drawLiteCanvasShore() {
-    const shadow = canvasShore ??= makeShadowMask(LITE_SHORE_MASK_SCALE);
-    shadow.clearRect(0, 0, width, height);
-    shadow.save();
-    shadow.translate(x, y);
-    shadow.scale(camera.zoom, camera.zoom);
-    shadow.shadowColor = colors.shore;
-    shadow.shadowBlur = settings.shoreBlur * shadow.canvas.width / width;
-    shadow.shadowOffsetY = settings.shoreLift * shadow.canvas.height / height;
-    shadow.fill(projected.land);
-    shadow.shadowColor = 'transparent';
-    shadow.globalCompositeOperation = 'destination-out';
-    shadow.fill(projected.land);
-    shadow.restore();
-
-    terrain.save();
-    terrain.setTransform(ratio, 0, 0, ratio, 0, 0);
-    terrain.drawImage(shadow.canvas, 0, 0, width, height);
-    terrain.restore();
-  }
-
-  function shadowMaskScale() {
-    return quality === 'lite' ? LITE_SHORE_MASK_SCALE : .5;
-  }
-
-  function resizeShadow() {
-    const active = renderer.active;
-    if (!active || !width || !height) return;
-    const scale = Math.min(ratio, quality === 'lite' ? LITE_SHORE_OUTPUT_SCALE : 1);
-    if (!active.driver.resize(Math.round(width * scale), Math.round(height * scale), scale)) {
-      active.fail();
-      return;
-    }
-    shoreMask = makeShadowMask(shadowMaskScale());
-    apertureMask = null;
-    shoreDirty = true;
-  }
-
-  function drawAcceleratedShadow(active, cuts) {
-    if (shoreDirty) {
-      shoreMask.clearRect(0, 0, width, height);
-      shoreMask.save();
-      shoreMask.translate(x, y);
-      shoreMask.scale(camera.zoom, camera.zoom);
-      shoreMask.fill(projected.land);
-      shoreMask.restore();
-    }
-    if (cuts.length) {
-      apertureMask ??= makeShadowMask(shadowMaskScale());
-      apertureMask.clearRect(0, 0, width, height);
-      applyTerrainCuts(apertureMask, cuts, true);
-    }
-    const rendered = active.driver.draw({
-      landMask: shoreDirty ? shoreMask.canvas : null,
-      cutMask: cuts.length ? apertureMask.canvas : null,
-      x, y, radius,
-      lift: settings.shoreLift,
-      blur: settings.shoreBlur,
-      color: colors.acceleratedShore,
-    });
-    shoreDirty = false;
-    if (!rendered) {
-      active.fail();
-      drawTerrain();
-    }
+    return coordinates && countryAtCoordinates(coordinates);
   }
 
   function liftLevel(lift, time) {
@@ -464,71 +148,43 @@ export function createGlobe({
   }
 
   function countrySilhouette(country) {
-    let silhouette = accentPaths.get(country);
-    if (!silhouette) {
-      const path = new Path2D();
-      const bounded = boundPath(path);
-      projectParts(countryPolygons(country), projected.projector, bounded);
-      const { left, top: topEdge, right, bottom } = bounded.bounds;
-      if (!Number.isFinite(right)) return;
+    const group = byId.get(country.id);
+    let bounds = accentPaths.get(group);
+    if (!bounds) {
+      const [[left, top], [right, bottom]] = accentBounds.bounds(group);
+      if (!Number.isFinite(right)) return null;
       const centerX = (left + right) / 2;
-      const centerY = (topEdge + bottom) / 2;
-      // On an orthographic sphere these are the screen components of its unit normal.
-      const normalLength = Math.max(naturalRadius, Math.hypot(centerX, centerY));
-      silhouette = {
-        path,
-        centerX, centerY,
-        normalX: centerX / normalLength,
-        normalY: centerY / normalLength,
-        topEdge,
-        bottom,
-        span: Math.max(right - left, bottom - topEdge),
+      const centerY = (top + bottom) / 2;
+      const normalLength = Math.max(1, Math.hypot(centerX, centerY));
+      bounds = {
+        centerX, centerY, normalX: centerX / normalLength, normalY: centerY / normalLength,
+        span: Math.max(right - left, bottom - top),
       };
-      accentPaths.set(country, silhouette);
+      accentPaths.set(group, bounds);
     }
-    return silhouette;
+    return bounds;
   }
 
-  function drawAccent(country, type, level, elevation = level, tint = 0) {
-    if (level <= 0) return;
+  function globeAccent(country, type, level, elevation = level, tint = 0) {
+    if (level <= 0) return null;
     const silhouette = countrySilhouette(country);
-    if (!silhouette) return;
-    const { path, centerX, centerY, normalX, normalY, topEdge, bottom, span } = silhouette;
+    if (!silhouette) return null;
+    const { centerX, centerY, normalX, normalY, span } = silhouette;
     const still = reducedMotion.matches;
-    if (still) elevation = 0;
-    const screenSpan = span * camera.zoom;
-    const lift = clamp(2.2 + Math.sqrt(screenSpan) * .17, 2.8, 5) * elevation * settings.hoverLift / 100;
-    // At 100%, each vertex lies on a concentric sphere with the lifted radius.
-    const growth = 1 + lift / radius * settings.hoverGrowth / 100;
-    top.save();
-    top.globalAlpha = level;
-    top.translate(x + centerX * camera.zoom + lift * normalX, y + centerY * camera.zoom + lift * normalY);
-    top.scale(camera.zoom * growth, camera.zoom * growth);
-    top.translate(-centerX, -centerY);
-
-    if (still && type === 'hover') {
-      top.fillStyle = '#dbe9e7';
-    } else if ((type === 'hover' || type === 'correct') && bottom > topEdge) {
-      const face = top.createLinearGradient(0, topEdge, 0, bottom);
-      face.addColorStop(0, faceColor(paperFace[0], colors.correct[0], tint));
-      face.addColorStop(1, faceColor(paperFace[1], colors.correct[1], tint));
-      top.fillStyle = face;
-    } else {
-      top.fillStyle = type === 'correct' ? settings.correctDark : accents[type];
-    }
-
-    if (!still && settings.hoverShadow) {
-      // A wide ambient shadow lifts the silhouette. The closer shadow gives it depth.
-      top.shadowColor = colors.accentAmbient;
-      top.shadowBlur = clamp(6.5 + Math.sqrt(screenSpan) * .26, 8, 12) * ratio;
-      top.shadowOffsetY = 1.25 * elevation * ratio;
-      top.fill(path);
-      top.shadowColor = colors.accentNear;
-      top.shadowBlur = 3.6 * ratio;
-      top.shadowOffsetY = 1.8 * elevation * ratio;
-    }
-    top.fill(path);
-    top.restore();
+    const lift = still ? 0 : clamp(2.2 + Math.sqrt(span * radius) * .17, 2.8, 5)
+      * elevation * settings.hoverLift / 100;
+    const growth = lift / radius * settings.hoverGrowth / 100;
+    const flatColor = accents[type] ?? (still && type === 'hover' ? accents.still : null);
+    return {
+      id: String(country.id),
+      offsetX: lift * normalX - centerX * radius * growth,
+      offsetY: lift * normalY - centerY * radius * growth,
+      scale: 1 + growth,
+      opacity: level,
+      cutOpacity: still ? 0 : smoothStep(Math.min(1, level / .68)),
+      light: flatColor ?? (tint ? blend(paperLight, correctColors[0], tint) : paperLight),
+      dark: flatColor ?? (tint ? blend(paperDark, correctColors[1], tint) : paperDark),
+    };
   }
 
   function correctElevation(fraction, start) {
@@ -540,59 +196,6 @@ export function createGlobe({
       + bounce * .48 * Math.exp(-5 * fraction) * Math.sin(angle);
   }
 
-  function terrainCuts(selected) {
-    if (reducedMotion.matches) return [];
-    const cuts = [];
-    const collect = (country, level) => {
-      if (level <= 0) return;
-      const silhouette = countrySilhouette(country);
-      if (silhouette) cuts.push({ path: silhouette.path, opacity: smoothStep(Math.min(1, level / .68)) });
-    };
-    if (highlight) collect(highlight.country, selected);
-    for (const [country, lift] of hoverLifts) {
-      if (country.id !== highlight?.id) collect(country, lift.level);
-    }
-    return cuts;
-  }
-
-  function applyTerrainCuts(context, cuts, includeShadow) {
-    context.save();
-    context.translate(x, y);
-    context.scale(camera.zoom, camera.zoom);
-    context.lineCap = 'round';
-    context.lineJoin = 'round';
-    context.fillStyle = '#000';
-    context.strokeStyle = '#000';
-
-    // The wider cut clears the original coast shadow on the water side.
-    if (includeShadow) {
-      if (!projected.waterMask) {
-        const edge = naturalRadius + 2;
-        const waterMask = new Path2D();
-        waterMask.rect(-edge, -edge, edge * 2, edge * 2);
-        waterMask.addPath(projected.land);
-        projected.waterMask = waterMask;
-      }
-      context.save();
-      context.clip(projected.waterMask, 'evenodd');
-      const shadowReach = settings.shoreLift + settings.shoreBlur * 1.25;
-      context.lineWidth = 2 * Math.max(13, shadowReach) / camera.zoom;
-      for (const { path, opacity } of cuts) {
-        context.globalAlpha = opacity;
-        context.stroke(path);
-      }
-      context.restore();
-    }
-
-    context.lineWidth = Math.max(1.5, 2 * settings.borderWidth) / camera.zoom;
-    for (const { path, opacity } of cuts) {
-      context.globalAlpha = opacity;
-      context.fill(path);
-      context.stroke(path);
-    }
-    context.restore();
-  }
-
   function tick(time, duration) {
     if (time - lastTick < 95 || document.hidden || navigator.userActivation?.hasBeenActive === false) return;
     if (typeof navigator.vibrate === 'function') {
@@ -602,16 +205,10 @@ export function createGlobe({
   }
 
   function nearBorder(country, point) {
-    const silhouette = countrySilhouette(country);
-    if (!silhouette) return false;
-    // Test the geographic outline at screen-pixel tolerance, without the visual lift.
-    top.save();
-    top.resetTransform();
-    top.lineJoin = 'round';
-    top.lineWidth = 2 * BORDER_TOLERANCE / camera.zoom;
-    const near = top.isPointInStroke(silhouette.path, (point.x - x) / camera.zoom, (point.y - y) / camera.zoom);
-    top.restore();
-    return near;
+    const { x, y } = point;
+    const r = BORDER_TOLERANCE;
+    return countryAt({ x: x - r, y })?.id === country.id || countryAt({ x: x + r, y })?.id === country.id
+      || countryAt({ x, y: y - r })?.id === country.id || countryAt({ x, y: y + r })?.id === country.id;
   }
 
   function setLift(country, to, time) {
@@ -686,43 +283,30 @@ export function createGlobe({
       }
     }
     if (overlayDirty || animating) {
-      const cuts = terrainCuts(selected);
-      if (renderer.active) drawAcceleratedShadow(renderer.active, cuts);
-      const hasCuts = cuts.length > 0;
-      if (terrainCanvas.hidden !== hasCuts) terrainCanvas.hidden = hasCuts;
-      if (overlayPainted) top.clearRect(0, 0, width, height);
-      if (hasCuts) {
-        // Use the terrain directly during rotation; only a cutout needs a copy.
-        top.save();
-        top.resetTransform();
-        top.drawImage(terrainCanvas, 0, 0);
-        top.restore();
-        top.save();
-        top.beginPath();
-        top.arc(x, y, radius, 0, Math.PI * 2);
-        top.clip();
-        top.globalCompositeOperation = 'destination-out';
-        applyTerrainCuts(top, cuts, !renderer.active);
-        top.restore();
-      }
+      const accents = [];
+      const add = accent => { if (accent) accents.push(accent); };
       if (highlight) {
         const elevation = correct
           ? correctElevation(progress, highlight.fromElevation)
           : liftLevel({ ...highlight, from: highlight.fromElevation }, time);
         const tint = correct ? smoothStep(Math.min(1, progress / .78)) : 0;
-        drawAccent(highlight.country, highlight.type, selected, elevation, tint);
+        add(globeAccent(highlight.country, highlight.type, selected, elevation, tint));
       }
       for (const [country, lift] of hoverLifts) {
-        if (country !== hover && country.id !== highlight?.id) drawAccent(country, 'hover', lift.level);
+        if (country !== hover && country.id !== highlight?.id) add(globeAccent(country, 'hover', lift.level));
       }
       if (hover && hover.id !== highlight?.id) {
         const lift = hoverLifts.get(hover);
         lift.lastElevation = lift.level * (1 - pressDepth);
-        drawAccent(hover, 'hover', lift.level, lift.lastElevation);
+        add(globeAccent(hover, 'hover', lift.level, lift.lastElevation));
       }
-      overlayPainted = hasCuts || Boolean(highlight) || hoverLifts.size > 0;
+      const active = renderer.active;
+      if (active) {
+        const drawn = active.driver.draw({ lon: camera.lon, lat: camera.lat, x, y, radius, settings, quality, accents });
+        if (drawn === false) active.fail();
+        else onRenderFrame?.(time);
+      }
       overlayDirty = animating;
-      onRenderFrame?.(time);
     }
     return animating || Boolean(pendingHover);
   }
@@ -754,26 +338,15 @@ export function createGlobe({
     }
     if (cameraDirty) {
       updateCenter();
-      updateProjection();
-      projectMap();
+      radius = naturalRadius * camera.zoom;
+      lastHit = null;
+      accentPaths = new WeakMap();
+      accentProjection.rotate([-camera.lon, -camera.lat, 0]);
       if (tiles) {
-        projection.clipExtent([[-3, mapTop - 3], [width + 3, mapBottom + 3]]);
         tiles.update(viewCap(camera.lon, camera.lat, radius, x, y - mapTop, width, mapBottom - mapTop), radius);
-        detail = null;
       }
-      shoreDirty = true;
+      oceanLabels.draw({ camera, view, radius, width, mapTop, mapBottom, enabled: Boolean(renderer.active) });
       cameraDirty = false;
-      overlayDirty = true;
-      waterDirty = true;
-      terrainDirty = true;
-    }
-    if (waterDirty) {
-      drawWater();
-      waterDirty = false;
-    }
-    if (terrainDirty) {
-      drawTerrain();
-      terrainDirty = false;
       overlayDirty = true;
     }
     const moving = Boolean(motion || camera.zoom !== zoomTarget);
@@ -804,11 +377,6 @@ export function createGlobe({
     const changed = (...fields) => fields.some(field => next[field] !== settings[field]);
     const layoutChanged = changed('globeX', 'globeY', 'globeSize');
     const homeChanged = changed('homeLon', 'homeLat', 'homeZoom');
-    const waterChanged = changed('waterLight', 'waterMid', 'waterDark', 'gridOpacity');
-    const landChanged = changed(...Object.values(continentFields), 'borderColor', 'borderWidth', 'borderOpacity');
-    const shoreChanged = changed('shoreLift', 'shoreBlur', 'shoreOpacity', 'shoreColor');
-    const accentChanged = changed('hoverLift', 'hoverGrowth', 'hoverDuration', 'hoverShadow',
-      'correctDuration', 'correctBounce', 'correctLight', 'correctDark');
 
     if (changed('hoverDuration', 'correctDuration')) {
       const time = performance.now();
@@ -825,16 +393,9 @@ export function createGlobe({
     settings = { ...next };
     if (layoutChanged) updateLayout();
     if (homeChanged) goTo(homePose(settings), 0);
-    if (waterChanged || landChanged || shoreChanged || accentChanged) {
-      colors = paintColors(settings);
-      if (waterChanged) {
-        paints = null;
-        waterDirty = true;
-      }
-      if (landChanged || (shoreChanged && !renderer.active)) terrainDirty = true;
-      if (shoreChanged || accentChanged) overlayDirty = true;
-      schedule();
-    }
+    correctColors = [color(settings.correctLight), color(settings.correctDark)];
+    overlayDirty = true;
+    schedule();
   }
 
   function updateLayout() {
@@ -854,8 +415,6 @@ export function createGlobe({
     if (gesture?.pinch) beginPinch();
     stage.style.setProperty('--globe-x', homeX + 'px');
     stage.style.setProperty('--globe-y', homeY + 'px');
-    paints = null;
-    projected = null;
     oceanLabels.clearMetrics();
     markCamera();
   }
@@ -871,22 +430,17 @@ export function createGlobe({
     mapBottom = region.bottom - rect.top;
     // Center the default globe below the header while keeping the entire stage interactive.
     layoutTop = stage.parentElement.getBoundingClientRect().top - rect.top;
-    for (const surface of [canvas, overlay, terrainCanvas]) {
-      surface.width = Math.round(width * ratio);
-      surface.height = Math.round(height * ratio);
-    }
-    for (const ctx of [base, top, terrain]) ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-    canvasShore = null;
-    resizeShadow();
+    bufferWidth = Math.round(width * ratio);
+    bufferHeight = Math.round(height * ratio);
+    const active = renderer.active;
+    if (active && active.driver.resize(bufferWidth, bufferHeight, ratio) === false) active.fail();
     updateLayout();
   }
 
   function setQuality(next) {
     if (next === quality || (next !== 'lite' && next !== 'standard')) return;
     quality = next;
-    canvasShore = null;
-    resizeShadow();
-    terrainDirty = overlayDirty = true;
+    overlayDirty = true;
     schedule();
   }
 
@@ -1027,8 +581,8 @@ export function createGlobe({
   }
 
   function select(point) {
-    if (!acceptsGuess) return;
-    updateProjection();
+    if (!acceptsGuess || !renderer.active) return;
+    lastHit = null;
     const hit = findCountry(point);
     if (hit) {
       tick(performance.now(), 10);
@@ -1240,7 +794,7 @@ export function createGlobe({
     describeRendering() {
       return {
         renderer: stage.dataset.renderer, rendererPending: renderer.pending, preference: renderer.preference,
-        width: canvas.width, height: canvas.height, quality,
+        width: bufferWidth, height: bufferHeight, quality,
       };
     },
     selectRenderer: renderer.select,

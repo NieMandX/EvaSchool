@@ -16,6 +16,7 @@
     "topojson-client": "3.1.0"
   },
   "devDependencies": {
+    "earcut": "3.0.1",
     "esbuild": "0.25.12"
   }
 }

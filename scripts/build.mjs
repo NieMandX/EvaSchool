@@ -1,6 +1,8 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
+import { createGlobeMesh } from './globe-mesh.mjs';
+import { globeMeshModule } from './globe-mesh-module.mjs';
 
 const root = new URL('../', import.meta.url);
 const file = path => new URL(path, root);
@@ -9,6 +11,16 @@ const outputDirectory = service ? 'dist-service' : 'dist';
 const styleFiles = ['src/style.css', 'src/player.css', 'src/benchmark.css'];
 if (service) styleFiles.push('src/service-panel.css', 'src/service-performance.css');
 const rankingUrl = process.env.KONTUR_RANKINGS_URL?.trim() ?? '';
+const meshPlugin = {
+  name: 'globe-mesh',
+  setup(builder) {
+    builder.onResolve({ filter: /^globe-mesh$/ }, () => ({ path: 'globe-mesh', namespace: 'atlas' }));
+    builder.onLoad({ filter: /.*/, namespace: 'atlas' }, async () => {
+      const atlas = JSON.parse(await readFile(file('src/assets/countries.json'), 'utf8'));
+      return { contents: globeMeshModule(createGlobeMesh(atlas)), loader: 'js' };
+    });
+  },
+};
 if (rankingUrl && new URL(rankingUrl).protocol !== 'https:') {
   throw new Error('KONTUR_RANKINGS_URL must be an HTTPS URL.');
 }
@@ -22,6 +34,7 @@ const [template, styleSources, bundled] = await Promise.all([
     minify: true,
     format: 'iife',
     charset: 'utf8',
+    plugins: [meshPlugin],
     define: { KONTUR_RANKINGS_URL: JSON.stringify(rankingUrl) },
     target: ['safari15.4', 'chrome105', 'firefox110'],
     write: false,
@@ -37,7 +50,8 @@ for (const subset of ['cyrillic', 'latin']) {
 }
 const notices = await Promise.all(
   ['node_modules/d3-geo/LICENSE', 'node_modules/d3-array/LICENSE', 'node_modules/internmap/LICENSE',
-    'node_modules/topojson-client/LICENSE', 'src/assets/World-Atlas-ISC.txt', 'src/assets/Manrope-OFL.txt', 'src/assets/World-Countries-ODbL.txt']
+    'node_modules/topojson-client/LICENSE', 'node_modules/earcut/LICENSE', 'src/assets/World-Atlas-ISC.txt',
+    'src/assets/Manrope-OFL.txt', 'src/assets/World-Countries-ODbL.txt']
     .map(async path => `${path.replace(/^.*?\//, '')}\n${await readFile(file(path), 'utf8')}`),
 );
 const licenses = [

@@ -43,7 +43,10 @@ const feedback = element('feedback');
 const questionView = element('question-view');
 const countryLabel = element('country');
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
-const titleMetrics = document.createElement('canvas').getContext('2d');
+const titleMetrics = document.createElement('span');
+titleMetrics.className = 'title-metrics';
+titleMetrics.setAttribute('aria-hidden', 'true');
+document.body.append(titleMetrics);
 
 const steps = Array.from({ length: ROUND_LENGTH }, () => {
   const step = document.createElement('span');
@@ -69,6 +72,7 @@ const globe = createGlobe({
   canvas: element('globe'),
   overlay: selection,
   input: element('globe-input'),
+  labelLayer: element('ocean-labels'),
   settings,
   onSelect: guess,
   onRenderFrame: renderStatus.recordFrame,
@@ -244,8 +248,8 @@ export function previewQuestionTransition() {
 function fitCountry(text) {
   const tracking = .06 * Math.max(0, text.length - 1);
   // Measure at a fixed size to keep the same line box as names change.
-  titleMetrics.font = '800 100px Manrope, system-ui, sans-serif';
-  const textUnits = Math.max(2.98, titleMetrics.measureText(text).width / 100 - tracking + .24);
+  titleMetrics.textContent = text;
+  const textUnits = Math.max(2.98, titleMetrics.getBoundingClientRect().width / 100 - tracking + .24);
   countryLabel.style.setProperty('--country-units', textUnits);
 }
 
