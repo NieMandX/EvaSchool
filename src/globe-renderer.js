@@ -7,6 +7,7 @@ export function createGlobeRenderer(anchor, onChange) {
   let active = null;
   let preference = 'auto';
   let generation = 0;
+  let pending = false;
 
   function show(next) {
     if (active === next) return;
@@ -20,7 +21,9 @@ export function createGlobeRenderer(anchor, onChange) {
 
   async function probe(order, generationAtStart) {
     const [name, ...fallback] = order;
-    if (!name || generationAtStart !== generation) return;
+    if (generationAtStart !== generation) return;
+    pending = Boolean(name);
+    if (!name) return;
     const surface = document.createElement('canvas');
     surface.setAttribute('aria-hidden', 'true');
     let failed = false;
@@ -40,6 +43,7 @@ export function createGlobeRenderer(anchor, onChange) {
       candidate.driver?.dispose();
       if (generationAtStart === generation) void probe(fallback, generationAtStart);
     } else if (candidate.driver) {
+      pending = false;
       show(candidate);
     } else {
       void probe(fallback, generationAtStart);
@@ -49,6 +53,7 @@ export function createGlobeRenderer(anchor, onChange) {
   return {
     get active() { return active; },
     get preference() { return preference; },
+    get pending() { return pending; },
     select(mode) {
       preference = ['canvas', 'webgl', 'webgpu'].includes(mode) ? mode : 'auto';
       const order = preference === 'canvas' ? [] : preference === 'webgl' ? ['webgl'] : ['webgpu', 'webgl'];

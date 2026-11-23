@@ -1,6 +1,8 @@
 import { SLOW_FRAME_MS } from './benchmark-metrics.js';
 import { RENDERER_NAMES } from './render-status.js';
 
+export const QUALITY_NAMES = { standard: 'Обычный', lite: 'Лёгкий' };
+
 const DASH = '—';
 const whole = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 });
 const decimal = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 });
@@ -23,19 +25,23 @@ function formatted(formatter, value) {
   return Number.isFinite(value) ? formatter.format(value) : DASH;
 }
 
-function rendererName(mode) {
-  return RENDERER_NAMES[mode] ?? DASH;
+function modeName(mode) {
+  return QUALITY_NAMES[mode] ?? RENDERER_NAMES[mode];
 }
 
-export function mountBenchmarkPanel({ start, cancel }) {
+export function mountBenchmarkPanel({ start, cancel, compareQuality = false }) {
+  const titleText = compareQuality ? 'Сравнение качества' : 'Сравнение рендереров';
+  const introText = compareQuality
+    ? 'Обычный и лёгкий режимы на одном рендерере. Замер займёт около 30 секунд.'
+    : 'Одинаковое вращение и зум в каждом режиме. Замер займёт около 30 секунд.';
   const panel = element('section', 'benchmark-panel');
   panel.id = 'benchmark-panel';
   panel.setAttribute('aria-labelledby', 'benchmark-title');
-  const title = element('h2', '', 'Сравнение рендереров');
+  const title = element('h2', '', titleText);
   title.id = 'benchmark-title';
   const statusLine = element('p', 'benchmark-status');
   statusLine.setAttribute('role', 'status');
-  const intro = element('p', 'benchmark-note', 'Одинаковое вращение и зум в каждом режиме. Замер займёт около 30 секунд.');
+  const intro = element('p', 'benchmark-note', introText);
   const progressBar = element('progress', 'benchmark-progress');
   progressBar.max = 100;
   progressBar.setAttribute('aria-label', 'Ход текущего прогона');
@@ -93,7 +99,7 @@ export function mountBenchmarkPanel({ start, cancel }) {
     const lines = [`Режим\tКадры\tFPS\tДлинные кадры (>${threshold} мс)\tp95, мс`];
     const rows = results.map(({ mode, samples, fps, slowFrames, slowShare, p95, unavailable }) => {
       const row = element('tr');
-      const name = rendererName(mode);
+      const name = modeName(mode) ?? DASH;
       const heading = element('th', '', name);
       heading.scope = 'row';
       row.append(heading);
@@ -121,12 +127,12 @@ export function mountBenchmarkPanel({ start, cancel }) {
     });
     body.replaceChildren(...rows);
     resultsBox.hidden = !rows.length;
-    copyText = rows.length ? ['Сравнение рендереров', message, ...lines].filter(Boolean).join('\n') : '';
+    copyText = rows.length ? [titleText, message, ...lines].filter(Boolean).join('\n') : '';
     copyButton.hidden = !copyText || typeof navigator.clipboard?.writeText !== 'function';
     return usable;
   }
 
-  function render({ status = 'idle', mode, run, total, progress, results = [], message = '' } = {}) {
+  function render({ status = 'idle', mode, renderer, run, total, progress, results = [], message = '' } = {}) {
     const running = status === 'running';
     if (status !== lastStatus) {
       const restoreFocus = running ? document.activeElement === startButton : document.activeElement === cancelButton;
@@ -145,9 +151,9 @@ export function mountBenchmarkPanel({ start, cancel }) {
     textIfChanged(messageLine, message);
 
     if (running) {
-      const label = rendererName(mode);
       const runText = Number.isFinite(run) && Number.isFinite(total) ? `Прогон ${run} из ${total}` : 'Подготовка замера';
-      textIfChanged(statusLine, label === DASH ? runText : `${label} · ${runText}`);
+      const label = [compareQuality && RENDERER_NAMES[renderer], modeName(mode), runText].filter(Boolean).join(' · ');
+      textIfChanged(statusLine, label);
       updateProgress(progress);
       return;
     }

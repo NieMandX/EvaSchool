@@ -32,6 +32,7 @@ export function applySettings(next) {
 applyScreenSettings(settings);
 
 const element = id => document.getElementById(id);
+const pageOptions = new URLSearchParams(location.search);
 const selection = element('selection');
 const hintButton = element('hint');
 const hintOptions = element('hint-options');
@@ -73,6 +74,7 @@ const globe = createGlobe({
   onRenderFrame: renderStatus.recordFrame,
   onRendererChange: renderStatus.setRenderer,
   rendererPreference: renderStatus.savedPreference(),
+  initialQuality: pageOptions.get('quality'),
 });
 renderStatus.setPreference(globe.describeRendering().preference);
 
@@ -450,13 +452,14 @@ nextButton.addEventListener('click', () => {
   if (keyboard && phase === 'question') selection.focus();
 });
 
-if (new URLSearchParams(location.search).get('benchmark') === '1') {
+if (pageOptions.get('benchmark') === '1') {
   globe.setGuessEnabled(false);
   mountBenchmark({
     globe,
     selectRenderer,
     shell: element('globe').closest('.shell'),
     resetCamera: () => globe.goTo({ lon: settings.homeLon, lat: settings.homeLat, zoom: settings.homeZoom }, 0),
+    compareQuality: pageOptions.get('compare') === 'quality',
   });
 } else {
   showQuestion();

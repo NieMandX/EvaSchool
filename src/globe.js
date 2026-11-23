@@ -14,6 +14,8 @@ import { createOceanLabels } from './ocean-labels.js';
 const MIN_ZOOM = 0.85;
 const MAX_ZOOM = 4.5;
 const MAX_PIXELS = 2_100_000;
+const LITE_SHORE_MASK_SCALE = .32;
+const LITE_SHORE_OUTPUT_SCALE = .5;
 const DEG = 180 / Math.PI;
 const countries = feature(atlas, atlas.objects.countries).features;
 const byId = new Map();
@@ -98,11 +100,13 @@ const accents = {
 
 export function createGlobe({
   stage, canvas, overlay, input, onSelect, settings: initialSettings, tileSource, onRenderFrame, onRendererChange,
-  rendererPreference,
+  rendererPreference, initialQuality,
 }) {
   const base = canvas.getContext('2d');
   const top = overlay.getContext('2d');
   const terrainCanvas = document.createElement('canvas');
+  terrainCanvas.setAttribute('aria-hidden', 'true');
+  overlay.before(terrainCanvas);
   const terrain = terrainCanvas.getContext('2d');
   const projection = geoOrthographic().clipAngle(90);
   const maxZoom = clamp(tileSource?.maxCameraZoom ?? MAX_ZOOM, MAX_ZOOM, 2 ** 20);
@@ -111,6 +115,7 @@ export function createGlobe({
   const detailPath = tileSource && geoPath(projection.precision(.35));
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
   let settings = { ...initialSettings };
+  let quality = initialQuality === 'lite' ? 'lite' : 'standard';
   let colors = paintColors(settings);
   const camera = { ...homePose(settings), offsetX: 0, offsetY: 0 };
   const view = { x: 0, y: 0, radius: 1 };
@@ -134,6 +139,7 @@ export function createGlobe({
   let waterDirty = true;
   let terrainDirty = true;
   let overlayDirty = true;
+  let overlayPainted = false;
   let zoomTarget = camera.zoom;
   let zoomAnchor = null;
   let lastFrame = null;
@@ -156,6 +162,7 @@ export function createGlobe({
   let paints;
   let shoreMask = null;
   let apertureMask = null;
+  let canvasShore = null;
   let shoreDirty = true;
   let frameObserver = null;
   let detail = null;
@@ -326,10 +333,12 @@ export function createGlobe({
     terrain.translate(x, y);
     terrain.scale(camera.zoom, camera.zoom);
 
-    // Embed relief in this layer on Canvas 2D so a lifted country can clear it.
+    // Keep the Canvas 2D shore shadow with the terrain so lifted countries can clear it.
+    const canvasShadow = !renderer.active && settings.shoreOpacity;
+    if (canvasShadow && quality === 'lite') drawLiteCanvasShore();
     terrain.save();
     terrain.fillStyle = settings.landEurasia;
-    if (!renderer.active && settings.shoreOpacity) {
+    if (canvasShadow && quality === 'standard') {
       terrain.shadowColor = colors.shore;
       terrain.shadowBlur = settings.shoreBlur * ratio;
       terrain.shadowOffsetY = settings.shoreLift * ratio;
@@ -371,9 +380,9 @@ export function createGlobe({
     terrain.restore();
   }
 
-  function makeShadowMask() {
+  function makeShadowMask(maxScale) {
     const surface = document.createElement('canvas');
-    const scale = Math.min(.5, 750 / Math.max(width, height));
+    const scale = Math.min(maxScale, 750 / Math.max(width, height));
     surface.width = Math.max(1, Math.round(width * scale));
     surface.height = Math.max(1, Math.round(height * scale));
     const context = surface.getContext('2d');
@@ -381,15 +390,40 @@ export function createGlobe({
     return context;
   }
 
+  function drawLiteCanvasShore() {
+    const shadow = canvasShore ??= makeShadowMask(LITE_SHORE_MASK_SCALE);
+    shadow.clearRect(0, 0, width, height);
+    shadow.save();
+    shadow.translate(x, y);
+    shadow.scale(camera.zoom, camera.zoom);
+    shadow.shadowColor = colors.shore;
+    shadow.shadowBlur = settings.shoreBlur * shadow.canvas.width / width;
+    shadow.shadowOffsetY = settings.shoreLift * shadow.canvas.height / height;
+    shadow.fill(projected.land);
+    shadow.shadowColor = 'transparent';
+    shadow.globalCompositeOperation = 'destination-out';
+    shadow.fill(projected.land);
+    shadow.restore();
+
+    terrain.save();
+    terrain.setTransform(ratio, 0, 0, ratio, 0, 0);
+    terrain.drawImage(shadow.canvas, 0, 0, width, height);
+    terrain.restore();
+  }
+
+  function shadowMaskScale() {
+    return quality === 'lite' ? LITE_SHORE_MASK_SCALE : .5;
+  }
+
   function resizeShadow() {
     const active = renderer.active;
     if (!active || !width || !height) return;
-    const scale = Math.min(ratio, 1);
+    const scale = Math.min(ratio, quality === 'lite' ? LITE_SHORE_OUTPUT_SCALE : 1);
     if (!active.driver.resize(Math.round(width * scale), Math.round(height * scale), scale)) {
       active.fail();
       return;
     }
-    shoreMask = makeShadowMask();
+    shoreMask = makeShadowMask(shadowMaskScale());
     apertureMask = null;
     shoreDirty = true;
   }
@@ -404,7 +438,7 @@ export function createGlobe({
       shoreMask.restore();
     }
     if (cuts.length) {
-      apertureMask ??= makeShadowMask();
+      apertureMask ??= makeShadowMask(shadowMaskScale());
       apertureMask.clearRect(0, 0, width, height);
       applyTerrainCuts(apertureMask, cuts, true);
     }
@@ -654,12 +688,15 @@ export function createGlobe({
     if (overlayDirty || animating) {
       const cuts = terrainCuts(selected);
       if (renderer.active) drawAcceleratedShadow(renderer.active, cuts);
-      top.clearRect(0, 0, width, height);
-      top.save();
-      top.resetTransform();
-      top.drawImage(terrainCanvas, 0, 0);
-      top.restore();
-      if (cuts.length) {
+      const hasCuts = cuts.length > 0;
+      if (terrainCanvas.hidden !== hasCuts) terrainCanvas.hidden = hasCuts;
+      if (overlayPainted) top.clearRect(0, 0, width, height);
+      if (hasCuts) {
+        // Use the terrain directly during rotation; only a cutout needs a copy.
+        top.save();
+        top.resetTransform();
+        top.drawImage(terrainCanvas, 0, 0);
+        top.restore();
         top.save();
         top.beginPath();
         top.arc(x, y, radius, 0, Math.PI * 2);
@@ -683,6 +720,7 @@ export function createGlobe({
         lift.lastElevation = lift.level * (1 - pressDepth);
         drawAccent(hover, 'hover', lift.level, lift.lastElevation);
       }
+      overlayPainted = hasCuts || Boolean(highlight) || hoverLifts.size > 0;
       overlayDirty = animating;
       onRenderFrame?.(time);
     }
@@ -838,8 +876,18 @@ export function createGlobe({
       surface.height = Math.round(height * ratio);
     }
     for (const ctx of [base, top, terrain]) ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    canvasShore = null;
     resizeShadow();
     updateLayout();
+  }
+
+  function setQuality(next) {
+    if (next === quality || (next !== 'lite' && next !== 'standard')) return;
+    quality = next;
+    canvasShore = null;
+    resizeShadow();
+    terrainDirty = overlayDirty = true;
+    schedule();
   }
 
   function stopMotion() {
@@ -1184,12 +1232,16 @@ export function createGlobe({
     },
     goTo,
     drawCameraFrame,
+    setQuality,
     projectPoint(coordinates) { return width && height ? projectGlobePoint(camera, coordinates, view) : null; },
     coordinatesAt(point) { return width && height ? globeCoordinates(camera, point, view) : null; },
     updateSettings,
     observeFrames(observer) { frameObserver = observer; },
     describeRendering() {
-      return { renderer: stage.dataset.renderer, preference: renderer.preference, width: canvas.width, height: canvas.height };
+      return {
+        renderer: stage.dataset.renderer, rendererPending: renderer.pending, preference: renderer.preference,
+        width: canvas.width, height: canvas.height, quality,
+      };
     },
     selectRenderer: renderer.select,
   };
