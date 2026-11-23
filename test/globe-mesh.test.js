@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { geoArea } from 'd3-geo';
+import { geoArea, geoContains } from 'd3-geo';
 import { feature } from 'topojson-client';
 import { createGlobeMesh } from '../scripts/globe-mesh.mjs';
 
@@ -96,4 +96,36 @@ test('border and graticule segments follow great circles with bounded spacing', 
     assert.ok(points.length && points.length % 2 === 0);
     for (let i = 0; i < points.length; i += 2) assert.ok(dot(points[i], points[i + 1]) >= Math.cos(maximumAngle * RAD));
   }
+});
+
+test('country fade ranges preserve continental tints and reference only shared borders', () => {
+  const owners = new Uint8Array(globe.borders.length / 6);
+  const land = Object.keys(SUFFIX).map(name => feature(atlas, atlas.objects[name]));
+  for (const [id, country] of globe.countries) {
+    let consumed = 0;
+    for (const [continent, start, length] of country.faces) {
+      assert.equal(start, consumed);
+      consumed += length;
+      // A triangle interior avoids ambiguous lookups directly on shared borders.
+      const center = [0, 0, 0];
+      for (const index of country.indices.subarray(start, start + 3)) {
+        for (let i = 0; i < 3; i++) center[i] += country.vertices[index * 3 + i];
+      }
+      const [x, y, z] = center;
+      assert.ok(geoContains(land[continent], [Math.atan2(y, x) / RAD, Math.atan2(z, Math.hypot(x, y)) / RAD]), id);
+    }
+    assert.equal(consumed, country.indices.length);
+    const local = new Set();
+    for (const [start, length] of country.borders) {
+      assert.ok(start >= 0 && start + length <= owners.length);
+      for (let i = start; i < start + length; i++) {
+        assert.ok(!local.has(i));
+        local.add(i);
+        owners[i]++;
+      }
+    }
+  }
+  assert.ok(owners.every(count => count === 2));
+  assert.deepEqual(globe.countries.get('250').faces.map(([i]) => globe.continents[i].field),
+    ['landEurasia', 'landSouthAmerica']);
 });

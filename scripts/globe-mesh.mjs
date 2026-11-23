@@ -1,6 +1,6 @@
 import { geoGraticule } from 'd3-geo';
 import earcut, { deviation } from 'earcut';
-import { feature, mesh } from 'topojson-client';
+import { feature } from 'topojson-client';
 
 const RAD = Math.PI / 180;
 const COAST_LIMIT = 1 - Math.cos(.35 * RAD);
@@ -283,6 +283,7 @@ function createBuilder() {
 
   return {
     addPolygon,
+    get indexCount() { return indices.length; },
     finish() {
       return {
         vertices: Float32Array.from(vertices.flat()),
@@ -311,20 +312,81 @@ function subdivideLines(geometry, limit = COAST_LIMIT) {
   return Float32Array.from(coordinates);
 }
 
+function countryTopology(atlas) {
+  // A directed arc has one polygon on its inside. Continental outlines seed the
+  // palette, then inland polygons inherit it across shared political borders.
+  const continentEdges = new Map();
+  for (const [index, name] of Object.keys(continentFields).entries()) {
+    for (const arc of atlas.objects[name].arcs.flat(Infinity)) continentEdges.set(arc, index);
+  }
+  const owners = new Map();
+  const countryParts = new Map();
+  const queue = [];
+  for (const geometry of atlas.objects.countries.geometries) {
+    const id = String(geometry.id);
+    if (!countryParts.has(id)) countryParts.set(id, []);
+    for (const arcs of geometry.type === 'Polygon' ? [geometry.arcs] : geometry.arcs) {
+      const polygon = { id, arcs, continent: undefined };
+      for (const ring of arcs) {
+        for (const arc of ring) {
+          owners.set(arc, polygon);
+          if (continentEdges.has(arc)) polygon.continent = continentEdges.get(arc);
+        }
+      }
+      if (polygon.continent !== undefined) queue.push(polygon);
+      countryParts.get(id).push(polygon);
+    }
+  }
+  for (let i = 0; i < queue.length; i++) {
+    const polygon = queue[i];
+    for (const ring of polygon.arcs) {
+      for (const arc of ring) {
+        const neighbor = owners.get(~arc);
+        if (neighbor && neighbor.continent === undefined && !continentEdges.has(arc)) {
+          neighbor.continent = polygon.continent;
+          queue.push(neighbor);
+        }
+      }
+    }
+  }
+  return { countryParts, owners };
+}
+
 export function createGlobeMesh(atlas) {
   const continents = Object.entries(continentFields).map(([name, field]) => {
     const builder = createBuilder();
     for (const polygon of polygons(feature(atlas, atlas.objects[name]).geometry)) builder.addPolygon(polygon);
     return { field, ...builder.finish() };
   });
-  const countryBuilders = new Map();
-  for (const { id, geometry } of feature(atlas, atlas.objects.countries).features) {
-    const key = String(id);
-    if (!countryBuilders.has(key)) countryBuilders.set(key, createBuilder());
-    for (const polygon of polygons(geometry)) countryBuilders.get(key).addPolygon(polygon);
+  const { countryParts, owners } = countryTopology(atlas);
+  const countries = new Map();
+  for (const [id, parts] of countryParts) {
+    const builder = createBuilder();
+    const faces = [];
+    for (const { continent, arcs } of parts.sort((a, b) => a.continent - b.continent)) {
+      if (continent === undefined) throw new Error('Unassigned continent for country ' + id);
+      const start = builder.indexCount;
+      builder.addPolygon(feature(atlas, { type: 'Polygon', arcs }).geometry.coordinates);
+      const count = builder.indexCount - start;
+      if (faces.at(-1)?.[0] === continent) faces.at(-1)[2] += count;
+      else faces.push([continent, start, count]);
+    }
+    countries.set(id, { ...builder.finish(), faces, borders: [] });
   }
-  const countries = new Map([...countryBuilders].map(([id, builder]) => [id, builder.finish()]));
-  const borders = subdivideLines(mesh(atlas, atlas.objects.countries, (a, b) => a !== b && a.id !== b.id));
+  // Keep one copy of each shared arc and record its segment range for both
+  // countries. A coastline never has two different owners.
+  const shared = [];
+  for (const [arc, a] of owners) {
+    const b = owners.get(~arc);
+    if (arc < 0 || !b || a.id === b.id) continue;
+    const line = feature(atlas, { type: 'LineString', arcs: [arc] }).geometry.coordinates;
+    const vertices = subdivideLines({ coordinates: [line] });
+    const range = [shared.length / 6, vertices.length / 6];
+    for (const value of vertices) shared.push(value);
+    countries.get(a.id).borders.push(range);
+    countries.get(b.id).borders.push(range);
+  }
+  const borders = Float32Array.from(shared);
   const grid = subdivideLines(geoGraticule().step([15, 15]).stepMajor([90, 90]).precision(5)(), GRID_LIMIT);
   return { continents, countries, borders, grid };
 }

@@ -82,6 +82,21 @@ const globe = createGlobe({
 });
 renderStatus.setPreference(globe.describeRendering().preference);
 
+const controls = [...document.querySelectorAll('input[name="globe-controls"]')];
+const controlsKey = 'kontur.desktop-controls.v1';
+let desktopMode = 'trackpad';
+try {
+  if (localStorage.getItem(controlsKey) === 'mouse') desktopMode = 'mouse';
+} catch { /* A private session can still switch modes. */ }
+globe.setDesktopMode(desktopMode);
+for (const choice of controls) {
+  choice.checked = choice.value === desktopMode;
+  choice.addEventListener('change', () => {
+    globe.setDesktopMode(choice.value);
+    try { localStorage.setItem(controlsKey, choice.value); } catch { /* Session only. */ }
+  });
+}
+
 function selectRenderer(preference) {
   globe.selectRenderer(preference);
   renderStatus.setPreference(globe.describeRendering().preference);

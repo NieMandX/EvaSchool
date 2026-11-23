@@ -1,3 +1,5 @@
+import { batchContinent } from './globe-batches.mjs';
+
 export function globeMeshModule({ continents, countries, borders, grid }) {
   const chunks = [];
   let offset = 0;
@@ -21,8 +23,11 @@ export function globeMeshModule({ continents, countries, borders, grid }) {
   }
 
   const manifest = {
-    continents: continents.map(({ field, ...part }) => [field, geometry(part)]),
-    countries: [...countries].map(([id, part]) => [id, geometry(part)]),
+    continents: continents.map(part => {
+      const spatial = batchContinent(part);
+      return [part.field, geometry(spatial), spatial.batches];
+    }),
+    countries: [...countries].map(([id, part]) => [id, geometry(part), part.faces, part.borders]),
     borders: write(borders),
     grid: write(grid),
   };
@@ -42,8 +47,8 @@ export function globeMeshModule({ continents, countries, borders, grid }) {
         return { vertices: positions(vertices), indices: new Uint16Array(bytes.buffer, ...indices) };
       }
       mesh = {
-        continents: manifest.continents.map(([field, part]) => ({ field, ...geometry(part) })),
-        countries: new Map(manifest.countries.map(([id, part]) => [id, geometry(part)])),
+        continents: manifest.continents.map(([field, part, batches]) => ({ field, ...geometry(part), batches })),
+        countries: new Map(manifest.countries.map(([id, part, faces, borders]) => [id, { ...geometry(part), faces, borders }])),
         borders: positions(manifest.borders),
         grid: positions(manifest.grid),
       };

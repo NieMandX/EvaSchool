@@ -26,6 +26,23 @@ export function createCountryIndex(countries) {
   };
 }
 
+// Accents are composited in draw order. Undo the displayed transform of each
+// country before testing the sphere, including pixels just outside its rim.
+export function pickVisibleCountry(point, center, accents, surfaceCountryAt) {
+  if (!accents.length) return surfaceCountryAt(point);
+  for (let i = accents.length - 1; i >= 0; i--) {
+    const { id, scale, offsetX, offsetY } = accents[i];
+    const original = {
+      x: center.x + (point.x - center.x - offsetX) / scale,
+      y: center.y + (point.y - center.y - offsetY) / scale,
+    };
+    const hit = surfaceCountryAt(original);
+    if (hit?.id === id) return hit;
+  }
+  const base = surfaceCountryAt(point);
+  return base && accents.some(accent => accent.id === base.id && accent.cutOpacity === 1) ? null : base;
+}
+
 export function tileLineVertices(entries) {
   const positions = [];
   let line = false;

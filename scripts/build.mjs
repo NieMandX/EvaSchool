@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { createGlobeMesh } from './globe-mesh.mjs';
 import { globeMeshModule } from './globe-mesh-module.mjs';
+import { buildOceanWaterGrid } from './ocean-water.mjs';
 
 const root = new URL('../', import.meta.url);
 const file = path => new URL(path, root);
@@ -17,7 +18,9 @@ const meshPlugin = {
     builder.onResolve({ filter: /^globe-mesh$/ }, () => ({ path: 'globe-mesh', namespace: 'atlas' }));
     builder.onLoad({ filter: /.*/, namespace: 'atlas' }, async () => {
       const atlas = JSON.parse(await readFile(file('src/assets/countries.json'), 'utf8'));
-      return { contents: globeMeshModule(createGlobeMesh(atlas)), loader: 'js' };
+      const grid = buildOceanWaterGrid(atlas);
+      const contents = globeMeshModule(createGlobeMesh(atlas)) + `\nexport const oceanWaterGrid = ${JSON.stringify(grid)};`;
+      return { contents, loader: 'js' };
     });
   },
 };

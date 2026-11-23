@@ -10,6 +10,7 @@ export function createGlobeRenderer(container, onChange) {
   let generation = 0;
   let pending = false;
   let status = 'loading';
+  let cancelRestore = null;
 
   function report(name) {
     if (name === status) return;
@@ -28,7 +29,30 @@ export function createGlobeRenderer(container, onChange) {
     }
   }
 
-  async function probe(order, generationAtStart) {
+  function waitForWebGl(surface, currentGeneration) {
+    active = null;
+    pending = true;
+    report('loading');
+    function cleanUp() {
+      clearTimeout(timeout);
+      surface.removeEventListener('webglcontextrestored', restored);
+      surface.remove();
+      cancelRestore = null;
+    }
+    function restored() {
+      cleanUp();
+      void probe(['webgl'], currentGeneration, surface);
+    }
+    // Some drivers never signal restoration. Try a fresh context once in that case.
+    const timeout = setTimeout(() => {
+      cleanUp();
+      void probe(['webgl'], currentGeneration);
+    }, 2000);
+    surface.addEventListener('webglcontextrestored', restored);
+    cancelRestore = cleanUp;
+  }
+
+  async function probe(order, generationAtStart, restoredSurface) {
     const [name, ...fallback] = order;
     if (generationAtStart !== generation) return;
     pending = Boolean(name);
@@ -36,14 +60,18 @@ export function createGlobeRenderer(container, onChange) {
       report('unavailable');
       return;
     }
-    const surface = document.createElement('canvas');
+    const surface = restoredSurface ?? document.createElement('canvas');
     surface.setAttribute('aria-hidden', 'true');
     let failed = false;
     const candidate = {
       name, surface, driver: null,
-      fail() {
+      fail(reason) {
         failed = true;
         if (active !== candidate) return;
+        if (name === 'webgl' && reason?.type === 'webglcontextlost') {
+          waitForWebGl(surface, generationAtStart);
+          return;
+        }
         show(null);
         report('loading');
         void probe(fallback, generationAtStart);
@@ -74,6 +102,7 @@ export function createGlobeRenderer(container, onChange) {
       preference = mode === 'webgl' || mode === 'webgpu' ? mode : 'auto';
       const order = preference === 'webgl' ? ['webgl'] : ['webgpu', 'webgl'];
       const nextGeneration = ++generation;
+      cancelRestore?.();
       pending = true;
       show(null);
       report('loading');

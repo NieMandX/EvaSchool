@@ -1,4 +1,5 @@
 import { shoreGaussian } from './globe-shadow-kernel.js';
+import { createLandVisibility } from './globe-visibility.js';
 
 const SCREEN_VERTEX = `
   attribute vec2 aPosition;
@@ -112,13 +113,13 @@ const BLUR = `
   uniform vec4 uKernel;
   uniform vec2 uPairs[12];
   void main() {
-    float alpha = texture2D(uMask, vUV).a * uKernel.z;
+    vec2 coverage = texture2D(uMask, vUV).rg * uKernel.z;
     for (int i = 0; i < 12; i++) {
       if (float(i) >= uKernel.w) break;
       vec2 delta = uKernel.xy * uPairs[i].x;
-      alpha += uPairs[i].y * (texture2D(uMask, vUV + delta).a + texture2D(uMask, vUV - delta).a);
+      coverage += uPairs[i].y * (texture2D(uMask, vUV + delta).rg + texture2D(uMask, vUV - delta).rg);
     }
-    gl_FragColor = vec4(0.0, 0.0, 0.0, alpha);
+    gl_FragColor = vec4(coverage, 0.0, 0.0);
   }
 `;
 
@@ -128,15 +129,19 @@ const SHORE = `
   uniform vec4 uDisk;
   uniform vec2 uSize;
   uniform vec4 uColor;
+  uniform vec2 uChannel;
   void main() {
     float circle = clamp((1.0 - length((vUV - uDisk.xy) / uDisk.zw)) * uSize.x + 0.5, 0.0, 1.0);
-    float alpha = texture2D(uMask, vUV + vec2(0.0, uSize.y)).a * uColor.a * circle;
+    float alpha = dot(texture2D(uMask, vUV + vec2(0.0, uSize.y)).rg, uChannel) * uColor.a * circle;
     gl_FragColor = vec4(uColor.rgb * alpha, alpha);
   }
 `;
 
 const DEGREE = Math.PI / 180;
-const corners = [0, -1, 1, -1, 1, 1, 0, -1, 1, 1, 0, 1];
+const EMPTY_LINES = new Float32Array(0);
+const corners = new Float32Array([0, -1, 1, -1, 1, 1, 0, 1]);
+const quad = [0, 1, 2, 0, 2, 3];
+const LINES_PER_BATCH = 16384; // Four corners per line, 16-bit indices.
 const white = [1, 1, 1];
 const liftShadow = [21 / 255, 54 / 255, 69 / 255];
 const gridColor = [50 / 255, 92 / 255, 109 / 255];
@@ -144,7 +149,7 @@ const rgb = hex => [1, 3, 5].map(start => parseInt(hex.slice(start, start + 2), 
 const byteOpacity = percent => Math.round(255 * percent / 100) / 255;
 
 function lineVertices(segments) {
-  const vertices = new Float32Array(segments.length * 8);
+  const vertices = new Float32Array(segments.length / 6 * 4 * 8);
   let cursor = 0;
   for (let i = 0; i + 5 < segments.length; i += 6) {
     for (let corner = 0; corner < corners.length; corner += 2) {
@@ -177,7 +182,8 @@ export function createWebGlGlobe(canvas, mesh, onFailure) {
   let ready = false;
 
   function onLost(event) {
-    fail(new Error(event.statusMessage || 'WebGL globe context lost'));
+    event.preventDefault();
+    fail(event);
   }
 
   function dispose() {
@@ -243,7 +249,7 @@ export function createWebGlGlobe(canvas, mesh, onFailure) {
     const land = build(LAND_VERTEX, LAND, ['aPosition'], ['uCamera', 'uPose', 'uOffset', 'uRamp', 'uColor', 'uShade']);
     const line = build(LINE_VERTEX, LINE, ['aStart', 'aEnd', 'aCorner'], ['uCamera', 'uPose', 'uPixels', 'uReach', 'uColor']);
     const blur = build(SCREEN_VERTEX, BLUR, ['aPosition'], ['uMask', 'uKernel', 'uPairs[0]']);
-    const shore = build(SCREEN_VERTEX, SHORE, ['aPosition'], ['uMask', 'uDisk', 'uSize', 'uColor']);
+    const shore = build(SCREEN_VERTEX, SHORE, ['aPosition'], ['uMask', 'uDisk', 'uSize', 'uColor', 'uChannel']);
     const screen = buffer(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]));
 
     // Keep local indices for each polygon group so even a globe with >65k vertices
@@ -264,14 +270,59 @@ export function createWebGlGlobe(canvas, mesh, onFailure) {
     const mapVertices = buffer(gl.ARRAY_BUFFER, vertices);
     const mapIndices = buffer(gl.ELEMENT_ARRAY_BUFFER, indices);
     const continents = mesh.continents.map(part => ({ range: ranges.get(part), field: part.field }));
-    const countries = new Map(Array.from(mesh.countries, ([id, part]) => [id, ranges.get(part)]));
-
-    function lines(segments, usage) {
-      return { buffer: buffer(gl.ARRAY_BUFFER, lineVertices(segments), usage), count: segments.length };
+    const selectLand = createLandVisibility(mesh.continents);
+    let visibleLand;
+    const instances = gl.getExtension('ANGLE_instanced_arrays');
+    const cornerBuffer = instances && buffer(gl.ARRAY_BUFFER, corners);
+    const lineElements = new Uint16Array((instances ? 1 : LINES_PER_BATCH) * 6);
+    for (let i = 0; i < lineElements.length / 6; i++) {
+      const first = i * 4;
+      for (let j = 0; j < quad.length; j++) lineElements[i * 6 + j] = first + quad[j];
     }
-    const borders = lines(mesh.borders);
-    const grid = lines(mesh.grid ?? []);
-    const detail = lines([], gl.DYNAMIC_DRAW);
+    const lineIndices = buffer(gl.ELEMENT_ARRAY_BUFFER, lineElements);
+    function lines(segments, usage) {
+      const data = instances ? segments : lineVertices(segments);
+      return { buffer: buffer(gl.ARRAY_BUFFER, data, usage), count: segments.length / 6 };
+    }
+    // ANGLE draws a contiguous run of endpoint instances. Core WebGL can
+    // instead index the original four-corner quads, sharing their vertices.
+    const borderData = instances ? new Float32Array(mesh.borders.length * 3) : mesh.borders;
+    if (instances) borderData.set(mesh.borders);
+    const localElements = instances ? null : new Uint16Array(mesh.borders.length * 2);
+    let nextBorder = mesh.borders.length;
+    let nextElement = 0;
+    const countries = new Map();
+    for (const [id, part] of mesh.countries) {
+      const range = ranges.get(part);
+      const faces = part.faces.map(([continent, first, count]) => ({
+        continent, start: range.start, offset: range.offset + first * 2, count,
+      }));
+      const first = nextBorder;
+      const batches = [];
+      for (const [start, count] of part.borders) {
+        if (instances) {
+          borderData.set(mesh.borders.subarray(start * 6, (start + count) * 6), nextBorder);
+        } else {
+          for (let segment = start; segment < start + count; segment++) {
+            const base = segment - segment % LINES_PER_BATCH;
+            let batch = batches[batches.length - 1];
+            if (!batch || batch.base !== base) {
+              batch = { base, offset: nextElement * 2, count: 0 };
+              batches.push(batch);
+            }
+            for (const corner of quad) localElements[nextElement++] = (segment - base) * 4 + corner;
+            batch.count += 6;
+          }
+        }
+        nextBorder += count * 6;
+      }
+      countries.set(id, { ...range, faces, batches, borderStart: first / 6, borderCount: (nextBorder - first) / 6 });
+    }
+    const localIndices = localElements && buffer(gl.ELEMENT_ARRAY_BUFFER, localElements);
+    const borders = lines(borderData);
+    borders.count = mesh.borders.length / 6;
+    const grid = lines(mesh.grid ?? EMPTY_LINES);
+    const detail = lines(EMPTY_LINES, gl.DYNAMIC_DRAW);
     const matrix = new Float32Array(9);
     let pose = [0, 0, 1, 1];
     let theme, colors;
@@ -303,9 +354,10 @@ export function createWebGlGlobe(canvas, mesh, onFailure) {
 
     function setDetail(segments) {
       if (disposed) return;
+      const data = segments ?? EMPTY_LINES;
       gl.bindBuffer(gl.ARRAY_BUFFER, detail.buffer);
-      gl.bufferData(gl.ARRAY_BUFFER, lineVertices(segments ?? []), gl.DYNAMIC_DRAW);
-      detail.count = segments?.length ?? 0;
+      gl.bufferData(gl.ARRAY_BUFFER, instances ? data : lineVertices(data), gl.DYNAMIC_DRAW);
+      detail.count = data.length / 6;
     }
 
     function beginScreen(pass) {
@@ -344,26 +396,67 @@ export function createWebGlGlobe(canvas, mesh, onFailure) {
 
     function drawFaces(alpha) {
       for (let i = 0; i < continents.length; i++) {
+        if (!visibleLand[i].length) continue;
         tint(colors.land[i], alpha);
-        drawRange(continents[i].range);
+        drawContinent(i);
       }
     }
 
-    function drawLines(group, color, size, alpha) {
-      if (!group.count || !size || !alpha) return;
+    function drawContinent(index) {
+      const spans = visibleLand[index];
+      if (!spans.length) return;
+      const { start, offset } = continents[index].range;
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, start);
+      for (let i = 0; i < spans.length; i += 2) {
+        gl.drawElements(gl.TRIANGLES, spans[i + 1], gl.UNSIGNED_SHORT, offset + spans[i] * 2);
+      }
+    }
+
+    function bindLineQuad(first) {
+      const offset = first * 4 * 32;
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 32, offset);
+      gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 32, offset + 12);
+      gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 32, offset + 24);
+    }
+
+    function drawLines(group, color, size, alpha, country) {
+      const count = country ? country.borderCount : group.count;
+      if (!count || !size || !alpha) return;
       gl.useProgram(line.program);
       gl.bindBuffer(gl.ARRAY_BUFFER, group.buffer);
       gl.enableVertexAttribArray(1);
       gl.enableVertexAttribArray(2);
-      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 32, 0);
-      gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 32, 12);
-      gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 32, 24);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, lineIndices);
       gl.uniformMatrix3fv(line.uCamera, false, matrix);
       gl.uniform4fv(line.uPose, pose);
       gl.uniform2f(line.uPixels, 2 / width, 2 / height);
       gl.uniform1f(line.uReach, size * ratio * .5 + .5);
       gl.uniform4f(line.uColor, color[0], color[1], color[2], alpha);
-      gl.drawArrays(gl.TRIANGLES, 0, group.count);
+      if (instances) {
+        const start = country ? country.borderStart : 0;
+        gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, start * 24);
+        gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, start * 24 + 12);
+        instances.vertexAttribDivisorANGLE(0, 1);
+        instances.vertexAttribDivisorANGLE(1, 1);
+        gl.bindBuffer(gl.ARRAY_BUFFER, cornerBuffer);
+        gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 0, 0);
+        instances.drawElementsInstancedANGLE(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0, count);
+        instances.vertexAttribDivisorANGLE(0, 0);
+        instances.vertexAttribDivisorANGLE(1, 0);
+        return;
+      }
+      if (country) {
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, localIndices);
+        for (const batch of country.batches) {
+          bindLineQuad(batch.base);
+          gl.drawElements(gl.TRIANGLES, batch.count, gl.UNSIGNED_SHORT, batch.offset);
+        }
+        return;
+      }
+      for (let drawn = 0; drawn < count; drawn += LINES_PER_BATCH) {
+        bindLineQuad(drawn);
+        gl.drawElements(gl.TRIANGLES, Math.min(count - drawn, LINES_PER_BATCH) * 6, gl.UNSIGNED_SHORT, 0);
+      }
     }
 
     function target() {
@@ -423,7 +516,7 @@ export function createWebGlGlobe(canvas, mesh, onFailure) {
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
 
-    function drawShoreMask(cuts, cssWidth, cssHeight, quality, blurRadius) {
+    function drawShadowMask(cuts, lifted, baseShadow, cssWidth, cssHeight, quality, blurRadius) {
       shoreSize(cssWidth, cssHeight, quality, blurRadius);
       gl.bindFramebuffer(gl.FRAMEBUFFER, mask.framebuffer);
       gl.viewport(0, 0, maskWidth, maskHeight);
@@ -432,9 +525,12 @@ export function createWebGlGlobe(canvas, mesh, onFailure) {
       gl.clear(gl.COLOR_BUFFER_BIT);
       beginLand();
       offset();
-      tint(white, 1);
-      for (const { range } of continents) drawRange(range);
-      if (cuts.length) {
+      if (baseShadow) {
+        gl.colorMask(true, false, false, false);
+        tint(white, 1);
+        for (let i = 0; i < continents.length; i++) drawContinent(i);
+      }
+      if (baseShadow && cuts.length) {
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.ZERO, gl.ONE_MINUS_SRC_ALPHA);
         for (const { range, cutOpacity } of cuts) {
@@ -444,11 +540,32 @@ export function createWebGlGlobe(canvas, mesh, onFailure) {
         gl.disable(gl.BLEND);
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
       }
+      if (lifted.length) {
+        gl.colorMask(false, true, false, false);
+        gl.enable(gl.BLEND);
+        for (const { range, offsetX, offsetY, scale, opacity } of lifted) {
+          offset(offsetX, offsetY, scale);
+          tint(white, opacity);
+          drawRange(range);
+        }
+        gl.disable(gl.BLEND);
+      }
+      gl.colorMask(true, true, true, true);
       if (blurRadius) {
         beginScreen(blur);
         convolve(mask, scratch, kernels.horizontal);
         convolve(scratch, mask, kernels.vertical);
       }
+    }
+
+    function compositeShadow(disk, radius, cssHeight, lift, color, opacity, accent) {
+      beginScreen(shore);
+      gl.bindTexture(gl.TEXTURE_2D, mask.texture);
+      gl.uniform4fv(shore.uDisk, disk);
+      gl.uniform2f(shore.uSize, Math.min(16384, radius * ratio), lift / cssHeight);
+      gl.uniform2f(shore.uChannel, accent ? 0 : 1, accent ? 1 : 0);
+      gl.uniform4f(shore.uColor, ...color, opacity);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
 
     function drawLand(settings, cuts) {
@@ -478,29 +595,22 @@ export function createWebGlGlobe(canvas, mesh, onFailure) {
         gl.stencilFunc(gl.EQUAL, i + 1, 255);
         beginLand();
         offset();
-        drawFaces(remaining);
-        drawLines(borders, colors.border, settings.borderWidth, borderOpacity * remaining);
+        const range = cuts[i].range;
+        for (const face of range.faces) {
+          tint(colors.land[face.continent], remaining);
+          drawRange(face);
+        }
+        drawLines(borders, colors.border, settings.borderWidth, borderOpacity * remaining, range);
         drawLines(detail, colors.border, 1, borderOpacity * remaining);
       }
       gl.disable(gl.STENCIL_TEST);
     }
 
-    function drawAccents(accents, settings, quality) {
+    function drawAccents(accents) {
       if (!accents.length) return;
       beginLand();
       for (const accent of accents) {
         const { range, offsetX = 0, offsetY = 0, scale = 1, opacity = 1, light, dark = light } = accent;
-        if (settings.hoverShadow && (offsetX || offsetY || scale !== 1)) {
-          const alpha = opacity * settings.hoverShadow / 100;
-          offset(offsetX, offsetY + 2.5, scale);
-          tint(liftShadow, alpha * (quality === 'lite' ? .24 : .18));
-          drawRange(range);
-          if (quality !== 'lite') {
-            offset(offsetX, offsetY + 1, scale);
-            tint(liftShadow, alpha * .11);
-            drawRange(range);
-          }
-        }
         offset(offsetX, offsetY, scale);
         tint(light, opacity, dark, accent.rampTop ?? 1, accent.rampBottom ?? -1);
         drawRange(range);
@@ -523,6 +633,7 @@ export function createWebGlGlobe(canvas, mesh, onFailure) {
       try {
         refreshColors(settings);
         const cssWidth = width / ratio, cssHeight = height / ratio;
+        visibleLand = selectLand(lon, lat, x, y, radius, cssWidth, cssHeight);
         const lonR = lon * DEGREE, latR = lat * DEGREE;
         const sinLon = Math.sin(lonR), cosLon = Math.cos(lonR);
         const sinLat = Math.sin(latR), cosLat = Math.cos(latR);
@@ -536,7 +647,11 @@ export function createWebGlGlobe(canvas, mesh, onFailure) {
           if (range && accent.opacity > 0) lifts.push({ ...accent, range });
         }
         const cuts = lifts.filter(accent => accent.cutOpacity > 0).slice(-254);
-        if (settings.shoreOpacity) drawShoreMask(cuts, cssWidth, cssHeight, quality, settings.shoreBlur);
+        const shaded = settings.hoverShadow
+          ? lifts.filter(({ offsetX, offsetY, scale }) => offsetX || offsetY || (scale ?? 1) !== 1) : [];
+        if (settings.shoreOpacity || shaded.length) {
+          drawShadowMask(cuts, shaded, settings.shoreOpacity, cssWidth, cssHeight, quality, settings.shoreBlur);
+        }
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         gl.viewport(0, 0, width, height);
@@ -556,16 +671,16 @@ export function createWebGlGlobe(canvas, mesh, onFailure) {
         gl.enable(gl.BLEND);
         drawLines(grid, gridColor, .64, byteOpacity(settings.gridOpacity) * .67);
         if (settings.shoreOpacity) {
-          beginScreen(shore);
-          gl.bindTexture(gl.TEXTURE_2D, mask.texture);
-          gl.uniform4fv(shore.uDisk, disk);
-          gl.uniform2f(shore.uSize, Math.min(16384, radius * ratio), settings.shoreLift / cssHeight);
-          gl.uniform4f(shore.uColor, ...colors.shore, byteOpacity(settings.shoreOpacity));
-          gl.drawArrays(gl.TRIANGLES, 0, 3);
+          compositeShadow(disk, radius, cssHeight, settings.shoreLift, colors.shore, byteOpacity(settings.shoreOpacity), false);
         }
         gl.disable(gl.SCISSOR_TEST);
         drawLand(settings, cuts);
-        drawAccents(lifts, settings, quality);
+        if (shaded.length) {
+          clipBackdrop(x, y, radius);
+          compositeShadow(disk, radius, cssHeight, 1.25, liftShadow, settings.hoverShadow * .0062, true);
+          gl.disable(gl.SCISSOR_TEST);
+        }
+        drawAccents(lifts);
         return true;
       } catch (error) { return fail(error); }
     }

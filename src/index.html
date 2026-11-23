@@ -14,7 +14,7 @@
     <header class="masthead">
       <details id="render-status" class="render-status">
         <summary id="render-toggle" class="render-status-summary">
-          <span class="sr-only">Выбор рендерера. Сейчас: </span>
+          <span class="sr-only">Режим графики и управление. Сейчас: </span>
           <span id="render-backend" class="render-status-value">—</span>
           <span class="render-status-divider" aria-hidden="true">·</span>
           <span class="render-status-value"><span class="sr-only">Частота кадров: </span><span id="render-fps">—</span> FPS</span>
@@ -27,6 +27,11 @@
             <label class="render-option"><input type="radio" name="globe-renderer" value="webgl"> WebGL</label>
           </fieldset>
           <p id="render-fallback" class="render-fallback" role="status" hidden></p>
+          <fieldset class="render-options desktop-controls">
+            <legend>Управление</legend>
+            <label class="render-option"><input type="radio" name="globe-controls" value="trackpad" checked> Трекпад</label>
+            <label class="render-option"><input type="radio" name="globe-controls" value="mouse"> Мышь</label>
+          </fieldset>
         </div>
       </details>
       <div id="progress" class="progress" role="progressbar" aria-label="Ход игры" aria-valuemin="1" aria-valuemax="10" aria-valuenow="1" aria-valuetext="Задание 1 из 10">

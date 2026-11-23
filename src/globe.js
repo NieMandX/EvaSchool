@@ -2,7 +2,7 @@ import { geoDistance, geoOrthographic, geoPath } from 'd3-geo';
 import { feature } from 'topojson-client';
 import atlas from './assets/countries.json';
 import { viewCap } from './map-geometry.js';
-import { createCountryIndex, tileLineVertices } from './globe-geography.js';
+import { createCountryIndex, pickVisibleCountry, tileLineVertices } from './globe-geography.js';
 import {
   anchorGlobe, globeCoordinates, globePoint, moveGlobe, projectGlobePoint,
   recordGlobeMotion, releaseGlobeMotion, wrapLongitude,
@@ -10,6 +10,9 @@ import {
 import { createGlobeRenderer } from './globe-renderer.js';
 import { createGlobeTiles } from './globe-tiles.js';
 import { createOceanLabels } from './ocean-labels.js';
+import { mountTrackpad } from './trackpad.js';
+import { createWaterLookup } from './ocean-water.js';
+import { oceanWaterGrid } from 'globe-mesh';
 
 const MIN_ZOOM = 0.85;
 const MAX_ZOOM = 4.5;
@@ -80,6 +83,7 @@ export function createGlobe({
   let motion = null;
   let pointer = null;
   let pointerMoved = false;
+  let trackpadActive = false;
   let gesture = null;
   let pinchDirty = false;
   let hover = null;
@@ -92,6 +96,7 @@ export function createGlobe({
   let accentPaths = new WeakMap();
   let lastTick = -Infinity;
   let lastHit = null;
+  let drawnAccents = [];
   let frameObserver = null;
   let bufferWidth = 0;
   let bufferHeight = 0;
@@ -106,9 +111,10 @@ export function createGlobe({
     },
   });
 
+  const isWater = createWaterLookup(oceanWaterGrid, countryAtCoordinates);
   const oceanLabels = createOceanLabels(labelLayer, (px, py) => {
     const coordinates = globeCoordinates(camera, { x: px, y: py }, view);
-    return coordinates && !countryAtCoordinates(coordinates);
+    return coordinates && isWater(coordinates);
   });
 
   stage.dataset.renderer = 'loading';
@@ -129,6 +135,8 @@ export function createGlobe({
   });
 
   function findCountry(point) {
+    // A stationary pointer must not start a new enter/leave cycle just because
+    // its own hover animation moved a small island away from the original spot.
     if (lastHit?.x === point.x && lastHit.y === point.y) return lastHit.country;
     const country = countryAt(point);
     lastHit = { x: point.x, y: point.y, country };
@@ -137,8 +145,13 @@ export function createGlobe({
 
   function countryAt(point) {
     if (point.y < mapTop - 9 || point.y > mapBottom) return null;
+    return pickVisibleCountry(point, view, drawnAccents, surfaceCountryAt);
+  }
+
+  function surfaceCountryAt(point) {
     const coordinates = globeCoordinates(camera, point, view);
-    return coordinates && countryAtCoordinates(coordinates);
+    const hit = coordinates && countryAtCoordinates(coordinates);
+    return hit ? byId.get(hit.id) : null;
   }
 
   function liftLevel(lift, time) {
@@ -231,6 +244,7 @@ export function createGlobe({
     }
 
     const point = keyboard ? { x: homeX, y: homeY } : gesture?.start ?? pointer;
+    if (!point || !acceptsGuess) lastHit = null;
     const country = acceptsGuess && point ? findCountry(point) : null;
     if (country === hover) {
       pendingHover = null;
@@ -256,7 +270,7 @@ export function createGlobe({
   }
 
   function drawSelection(time, moving, elapsed) {
-    updateHover(time, moving || gesture?.dragged);
+    updateHover(time, moving || gesture?.dragged || trackpadActive);
     const depth = hover && gesture && !reducedMotion.matches ? .58 : 0;
     const difference = (pressDepth - depth) * Math.exp(-elapsed / 26);
     const nextDepth = !hover || reducedMotion.matches || Math.abs(difference) < .006
@@ -304,7 +318,10 @@ export function createGlobe({
       if (active) {
         const drawn = active.driver.draw({ lon: camera.lon, lat: camera.lat, x, y, radius, settings, quality, accents });
         if (drawn === false) active.fail();
-        else onRenderFrame?.(time);
+        else {
+          drawnAccents = accents;
+          onRenderFrame?.(time);
+        }
       }
       overlayDirty = animating;
     }
@@ -340,6 +357,7 @@ export function createGlobe({
       updateCenter();
       radius = naturalRadius * camera.zoom;
       lastHit = null;
+      drawnAccents = [];
       accentPaths = new WeakMap();
       accentProjection.rotate([-camera.lon, -camera.lat, 0]);
       if (tiles) {
@@ -484,11 +502,18 @@ export function createGlobe({
     return false;
   }
 
-  function zoomBy(factor, point = { x: homeX, y: homeY }) {
+  function zoomBy(factor, point = { x: homeX, y: homeY }, direct = false) {
     if (motion) stopMotion();
-    if (!zoomAnchor || pointDistance(point, zoomAnchor.point) > .5) zoomAnchor = zoomPivot(point);
-    zoomTarget = clamp(zoomTarget * factor, MIN_ZOOM, maxZoom);
-    if (reducedMotion.matches || !settings.zoomResponse) {
+    if (!zoomAnchor || Boolean(zoomAnchor.direct) !== direct || pointDistance(point, zoomAnchor.point) > .5) {
+      zoomAnchor = zoomPivot(point);
+      if (direct) {
+        zoomAnchor.direct = true;
+        zoomAnchor.location = globePoint(camera, point, view);
+        zoomAnchor.spherical = true;
+      }
+    }
+    zoomTarget = clamp((direct ? camera.zoom : zoomTarget) * factor, MIN_ZOOM, maxZoom);
+    if (direct || reducedMotion.matches || !settings.zoomResponse) {
       applyZoom(zoomTarget);
       markCamera();
     } else {
@@ -580,10 +605,8 @@ export function createGlobe({
     markCamera();
   }
 
-  function select(point) {
+  function select(hit) {
     if (!acceptsGuess || !renderer.active) return;
-    lastHit = null;
-    const hit = findCountry(point);
     if (hit) {
       tick(performance.now(), 10);
       onSelect(hit.id);
@@ -605,7 +628,9 @@ export function createGlobe({
     if (pointers.has(event.pointerId)) finishPointer(event);
     if (pointers.size >= 2) return;
     const point = eventPoint(event);
-    if (!pointers.size && (point.y < mapTop - 9 || point.y > mapBottom || pointDistance(point, { x, y }) > radius)) return;
+    const pressedCountry = !pointers.size && acceptsGuess ? countryAt(point) : null;
+    if (!pointers.size && (point.y < mapTop - 9 || point.y > mapBottom ||
+      (pointDistance(point, { x, y }) > radius && !pressedCountry))) return;
     if (event.pointerType !== 'touch') overlay.focus({ preventScroll: true });
     try {
       input.setPointerCapture(event.pointerId);
@@ -619,7 +644,7 @@ export function createGlobe({
     pointers.set(event.pointerId, point);
     if (pointers.size === 1) {
       gesture = {
-        start: point, dragged: false, pinched: false, pinch: null,
+        start: point, pressedCountry, dragged: false, pinched: false, pinch: null,
         threshold: event.pointerType === 'touch' ? 6 : 4,
         samples: [],
       };
@@ -697,7 +722,9 @@ export function createGlobe({
     pointer = event.pointerType !== 'touch' && overInput ? point : null;
     if (released) {
       if (drag.dragged) coast(drag, time);
-      else if (!drag.pinched && overInput && pointDistance(point, drag.start) < drag.threshold) select(point);
+      // The press animation can lower the coastline beneath a stationary finger.
+      // A completed tap belongs to the country visible at pointer-down.
+      else if (!drag.pinched && overInput && pointDistance(point, drag.start) < drag.threshold) select(drag.pressedCountry);
     }
     overlayDirty = true;
     schedule();
@@ -720,13 +747,33 @@ export function createGlobe({
     schedule();
   });
   input.addEventListener('pointerleave', () => { pointer = null; pointerMoved = false; schedule(); });
-  input.addEventListener('wheel', event => {
-    const point = eventPoint(event);
-    if (gesture || point.y < mapTop - 9 || point.y > mapBottom || pointDistance(point, { x, y }) > radius) return;
-    event.preventDefault();
-    const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? height : 1);
-    zoomBy(Math.exp(-clamp(delta, -180, 180) * .0023), point);
-  }, { passive: false });
+  const setDesktopMode = mountTrackpad(input, {
+    pointFor(event) {
+      if (event.type === 'gesturestart' && !event.clientX && !event.clientY && pointer) return pointer;
+      return eventPoint(event);
+    },
+    accepts: point => point.y >= mapTop - 9 && point.y <= mapBottom && pointDistance(point, { x, y }) <= radius,
+    directTouch: () => Boolean(gesture),
+    begin(point) {
+      trackpadActive = true;
+      keyboard = false;
+      pointer = point;
+    },
+    end() {
+      if (!trackpadActive) return;
+      trackpadActive = false;
+      if (zoomAnchor?.direct) zoomAnchor = null;
+      schedule();
+    },
+    rotate(dx, dy) {
+      stopMotion();
+      const degreesPerPixel = DEG / (naturalRadius * camera.zoom);
+      camera.lon = wrapLongitude(camera.lon + dx * degreesPerPixel);
+      camera.lat = clamp(camera.lat - dy * degreesPerPixel, -89, 89);
+      markCamera();
+    },
+    zoom: zoomBy,
+  });
 
   overlay.addEventListener('blur', () => { keyboard = false; schedule(); });
   overlay.addEventListener('keydown', event => {
@@ -745,7 +792,7 @@ export function createGlobe({
     } else if (event.key === 'Home') {
       goTo(homePose(settings), settings.resetDuration);
     } else if (event.key === 'Enter' || event.key === ' ') {
-      if (!event.repeat) select({ x: homeX, y: homeY });
+      if (!event.repeat) select(countryAt({ x: homeX, y: homeY }));
     } else {
       return;
     }
@@ -787,6 +834,7 @@ export function createGlobe({
     goTo,
     drawCameraFrame,
     setQuality,
+    setDesktopMode,
     projectPoint(coordinates) { return width && height ? projectGlobePoint(camera, coordinates, view) : null; },
     coordinatesAt(point) { return width && height ? globeCoordinates(camera, point, view) : null; },
     updateSettings,

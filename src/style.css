@@ -132,7 +132,7 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
   inset-block-start: calc(100% + 2px);
   inset-inline-start: 0;
   inline-size: min(215px, calc(100vw - var(--render-inset) - 8px));
-  max-block-size: min(280px, calc(100svh - var(--header-height) - 12px));
+  max-block-size: calc(100svh - var(--header-height) - 12px);
   overflow: auto;
   overscroll-behavior: contain;
   padding: 11px 9px 8px;
@@ -153,6 +153,10 @@ svg { display: block; stroke: currentColor; fill: none; stroke-width: 1.7; strok
   border: 0;
 }
 .render-options legend { margin: 0 0 4px; padding-inline: 7px; font-size: 12px; }
+.desktop-controls { display: none; }
+@media (any-pointer: fine) {
+  .desktop-controls { display: block; margin-block-start: 10px; }
+}
 .render-option {
   display: flex;
   align-items: center;

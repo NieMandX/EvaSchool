@@ -1,4 +1,5 @@
 import { shoreGaussian } from './globe-shadow-kernel.js';
+import { createLandVisibility } from './globe-visibility.js';
 
 const SAMPLES = 4;
 const DEPTH_FORMAT = 'depth24plus-stencil8';
@@ -348,6 +349,8 @@ export async function createWebGpuGlobe(canvas, mesh, onFailure) {
 
     device.pushErrorScope('validation');
     const geometry = packedGeometry(mesh, upload);
+    const selectLand = createLandVisibility(mesh.continents);
+    let visibleLand;
     const borders = segmentBuffer(mesh.borders);
     const grid = segmentBuffer(mesh.grid);
     const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
@@ -434,10 +437,12 @@ export async function createWebGpuGlobe(canvas, mesh, onFailure) {
     function requireShadow(quality, blur) {
       if (!shadow || shadow.quality !== quality) {
         removeTargets(shadow);
-        const scale = quality === 'lite' ? .26 : .48;
+        // The blur radius is in CSS pixels. Retina density belongs to the sharp
+        // map edges, while the soft shadow can use the same budget on every screen.
+        const scale = Math.min((quality === 'lite' ? .26 : .48) / ratio, 750 / Math.max(width, height));
         const size = [Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(height * scale))];
-        const resources = Array.from({ length: 3 }, () => texture(size, 'rgba8unorm', 1, true));
-        const [initial, horizontal, vertical] = resources.map(target => target.createView());
+        const resources = Array.from({ length: 2 }, () => texture(size, 'rgba8unorm', 1, true));
+        const [initial, horizontal] = resources.map(target => target.createView());
         const groupFor = (source, buffer) => device.createBindGroup({
           layout: gaussian.getBindGroupLayout(0),
           entries: [
@@ -446,10 +451,10 @@ export async function createWebGpuGlobe(canvas, mesh, onFailure) {
         });
         const composite = device.createBindGroup({
           layout: shadowLayout,
-          entries: [{ binding: 0, resource: vertical }, { binding: 1, resource: sampler }],
+          entries: [{ binding: 0, resource: initial }, { binding: 1, resource: sampler }],
         });
         shadow = {
-          resources, quality, size, initial, horizontal, vertical, composite,
+          resources, quality, size, initial, horizontal, composite,
           blurX: groupFor(initial, kernels[0]), blurY: groupFor(horizontal, kernels[1]),
         };
         previousBlur = NaN;
@@ -488,6 +493,16 @@ export async function createWebGpuGlobe(canvas, mesh, onFailure) {
       else pass.draw(range.count, 1, range.vertex);
     }
 
+    function continent(pass, index, offset) {
+      const spans = visibleLand[index];
+      if (!spans.length) return;
+      const range = geometry.continents[index].range;
+      bind(pass, offset);
+      for (let i = 0; i < spans.length; i += 2) {
+        pass.drawIndexed(spans[i + 1], 1, range.index + spans[i], range.vertex);
+      }
+    }
+
     function segments(pass, source, offset) {
       if (!source) return;
       bind(pass, offset);
@@ -513,7 +528,7 @@ export async function createWebGpuGlobe(canvas, mesh, onFailure) {
       if (baseShadow) {
         mask.setPipeline(shadowLand);
         const solid = paint([0, 0, 1, 0], [1, 0, 0]);
-        for (const { range } of geometry.continents) triangles(mask, range, solid);
+        for (let i = 0; i < geometry.continents.length; i++) continent(mask, i, solid);
         mask.setPipeline(shadowCut);
         for (const { range, cutOpacity } of accents) {
           if (cutOpacity > 0) triangles(mask, range, paint([0, 0, 1, 0], [0, 0, 0], undefined, cutOpacity));
@@ -521,18 +536,21 @@ export async function createWebGpuGlobe(canvas, mesh, onFailure) {
       }
       if (accentShadow) {
         mask.setPipeline(shadowLift);
-        for (const { range, transform, opacity } of accents) {
-          triangles(mask, range, paint(transform, [0, 1, 0], undefined, opacity));
+        for (const { range, transform, opacity, raised } of accents) {
+          if (raised) triangles(mask, range, paint(transform, [0, 1, 0], undefined, opacity));
         }
       }
       mask.end();
-      blurPass(encoder, shadow.horizontal, shadow.blurX);
-      blurPass(encoder, shadow.vertical, shadow.blurY);
+      if (previousBlur > 0) {
+        blurPass(encoder, shadow.horizontal, shadow.blurX);
+        blurPass(encoder, shadow.initial, shadow.blurY);
+      }
     }
 
     function draw({ lon, lat, x, y, radius, settings, quality, accents = [] }) {
       if (disposed || !width || radius <= 0) return false;
       try {
+        visibleLand = selectLand(lon, lat, x, y, radius, width / ratio, height / ratio);
         if (currentSettings !== settings) {
           const fields = geometry.continents.map(({ field }) => field);
           const names = ['waterLight', 'waterMid', 'waterDark', 'borderColor', 'shoreColor', ...fields];
@@ -543,7 +561,8 @@ export async function createWebGpuGlobe(canvas, mesh, onFailure) {
         for (const { id, offsetX = 0, offsetY = 0, scale = 1, opacity = 1, cutOpacity = opacity, light, dark } of accents) {
           const range = geometry.countries.get(id) ?? geometry.countries.get(String(id));
           if (range && opacity > 0) {
-            liftedShapes.push({ range, transform: [offsetX, offsetY, scale, 0], opacity: clamp01(opacity), cutOpacity: clamp01(cutOpacity), light, dark });
+            const raised = Boolean(offsetX || offsetY || scale !== 1);
+            liftedShapes.push({ range, transform: [offsetX, offsetY, scale, 0], raised, opacity: clamp01(opacity), cutOpacity: clamp01(cutOpacity), light, dark });
           }
         }
         requirePaints(18 + geometry.continents.length + 4 * liftedShapes.length);
@@ -561,7 +580,7 @@ export async function createWebGpuGlobe(canvas, mesh, onFailure) {
           width / ratio, height / ratio, x, y, radius, ratio, 0, 0,
         ]);
         const baseShadow = clamp01(settings.shoreOpacity / 100);
-        const accentShadow = liftedShapes.length > 0 ? clamp01(settings.hoverShadow / 100) : 0;
+        const accentShadow = liftedShapes.some(shape => shape.raised) ? clamp01(settings.hoverShadow / 100) : 0;
         const encoder = device.createCommandEncoder();
         if (baseShadow || accentShadow) {
           requireShadow(quality, settings.shoreBlur);
@@ -578,6 +597,14 @@ export async function createWebGpuGlobe(canvas, mesh, onFailure) {
             stencilLoadOp: 'clear', stencilStoreOp: 'discard', stencilClearValue: 0,
           },
         });
+        // Only the bottom contact shadow extends below the sphere. Lifted
+        // countries can protrude past the limb, so restore the full scissor for land.
+        const left = Math.max(0, Math.min(width, Math.floor((x - radius) * ratio) - 2));
+        const right = Math.max(left, Math.min(width, Math.ceil((x + radius) * ratio) + 2));
+        const top = Math.max(0, Math.min(height, Math.floor((y - radius) * ratio) - 2));
+        const reach = Math.max(radius, radius * .984 + Math.max(10, radius * .09));
+        const bottom = Math.max(top, Math.min(height, Math.ceil((y + reach) * ratio) + 2));
+        pass.setScissorRect(left, top, right - left, bottom - top);
         pass.setPipeline(ocean);
         bind(pass, paint([0, 0, 1, 0], palette.waterLight, palette.waterMid, 1, palette.waterDark));
         pass.draw(3);
@@ -594,6 +621,7 @@ export async function createWebGpuGlobe(canvas, mesh, onFailure) {
           pass.draw(3);
         }
 
+        pass.setScissorRect(0, 0, width, height);
         bindGeometry(pass);
         if (liftedShapes.some(({ cutOpacity }) => cutOpacity > 0)) {
           pass.setPipeline(cutter);
@@ -604,7 +632,9 @@ export async function createWebGpuGlobe(canvas, mesh, onFailure) {
         }
         pass.setPipeline(land);
         pass.setStencilReference(0);
-        for (const { field, range } of geometry.continents) triangles(pass, range, paint([0, 0, 1, 0], palette[field]));
+        for (let i = 0; i < geometry.continents.length; i++) {
+          if (visibleLand[i].length) continent(pass, i, paint([0, 0, 1, 0], palette[geometry.continents[i].field]));
+        }
         if (settings.borderWidth > 0 && settings.borderOpacity > 0) {
           pass.setPipeline(lines);
           const stroke = paint([0, 0, 1, settings.borderWidth], palette.borderColor, undefined, settings.borderOpacity / 100);
