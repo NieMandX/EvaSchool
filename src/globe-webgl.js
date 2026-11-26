@@ -1,5 +1,6 @@
 import { shoreGaussian } from './globe-shadow-kernel.js';
 import { createLandVisibility } from './globe-visibility.js';
+import { globeMaterial } from './globe-material.js';
 
 const SCREEN_VERTEX = `
   attribute vec2 aPosition;
@@ -10,31 +11,38 @@ const SCREEN_VERTEX = `
   }
 `;
 
-const LAND_VERTEX = `
+const LAND_TRANSFORM = `
   attribute vec3 aPosition;
   uniform mat3 uCamera;
   uniform vec4 uPose;
   uniform vec3 uOffset;
-  varying EDGE_PRECISION float vHeight;
+  vec4 clipLand(vec3 p) {
+    return vec4(uPose.xy + p.xy * uPose.zw * uOffset.z + uOffset.xy, p.z - 1.0, 1.0);
+  }
+`;
+
+const LAND_VERTEX = LAND_TRANSFORM + globeMaterial('glsl') + `
+  uniform vec4 uColor;
+  uniform vec3 uShade;
+  uniform vec3 uRamp;
+  varying EDGE_PRECISION vec4 vColor;
   void main() {
     vec3 p = uCamera * aPosition;
-    gl_Position = vec4(uPose.xy + p.xy * uPose.zw * uOffset.z + uOffset.xy, p.z - 1.0, 1.0);
-    vHeight = p.y;
+    gl_Position = clipLand(p);
+    vec3 base = mix(uColor.rgb, uShade, clamp(p.y * uRamp.x + uRamp.y, 0.0, 1.0));
+    vColor = vec4(porcelain(base, p, uRamp.z) * uColor.a, uColor.a);
   }
 `;
 
 const LAND = `
-  uniform vec4 uColor;
-  uniform vec3 uShade;
-  uniform vec2 uRamp;
-  varying EDGE_PRECISION float vHeight;
-  void main() {
-    vec3 rgb = mix(uColor.rgb, uShade, clamp(vHeight * uRamp.x + uRamp.y, 0.0, 1.0));
-    gl_FragColor = vec4(rgb * uColor.a, uColor.a);
-  }
+  varying EDGE_PRECISION vec4 vColor;
+  void main() { gl_FragColor = vColor; }
 `;
 
-const WATER = `
+const MASK_VERTEX = LAND_TRANSFORM + `void main() { gl_Position = clipLand(uCamera * aPosition); }`;
+const MASK = `uniform float uCoverage; void main() { gl_FragColor = vec4(uCoverage); }`;
+
+const WATER = globeMaterial('glsl') + `
   varying EDGE_PRECISION vec2 vUV;
   uniform vec4 uDisk;
   uniform vec2 uSize;
@@ -43,16 +51,14 @@ const WATER = `
   uniform vec3 uDark;
   void main() {
     vec2 p = (vUV - uDisk.xy) / uDisk.zw;
-    float r = length(p);
-    float edge = (1.0 - r) * uSize.x;
+    // At the silhouette, (1-r²)/2 has the same slope as the signed distance 1-r.
+    float depthSquared = 1.0 - dot(p, p);
+    float edge = 0.5 * depthSquared * uSize.x;
     float fill = clamp(edge + 0.5, 0.0, 1.0);
     vec4 water = vec4(0.0);
     if (fill > 0.0) {
-      vec2 shift = vec2(0.34, -0.43);
-      vec2 fromLight = p + shift;
-      float b = dot(fromLight, shift) + 0.0735;
-      float t = clamp((sqrt(max(0.0, b * b + 0.802 * (dot(fromLight, fromLight) - 0.0049))) - b) / 0.802, 0.0, 1.0);
-      vec3 rgb = t < 0.63 ? mix(uLight, uMid, t / 0.63) : mix(uMid, uDark, (t - 0.63) / 0.37);
+      vec3 n = vec3(p, sqrt(max(0.0, depthSquared)));
+      vec3 rgb = enamel(uDark, uMid, uLight, n);
       water = vec4(rgb * fill, fill);
     }
     if (fill < 1.0) {
@@ -60,7 +66,7 @@ const WATER = `
       float contact = max(0.0, 1.0 - length(q)) * (66.0 / 255.0) * (1.0 - fill);
       water += vec4(vec3(41.0, 70.0, 84.0) / 255.0 * contact, contact);
     }
-    float rim = min(1.0, max(0.0, 0.9 - abs(edge))) * (116.0 / 255.0);
+    float rim = min(1.0, max(0.0, 0.9 - abs(edge))) * 0.18;
     gl_FragColor = vec4(vec3(66.0, 101.0, 113.0) / 255.0 * rim, rim) + water * (1.0 - rim);
   }
 `;
@@ -142,7 +148,6 @@ const EMPTY_LINES = new Float32Array(0);
 const corners = new Float32Array([0, -1, 1, -1, 1, 1, 0, 1]);
 const quad = [0, 1, 2, 0, 2, 3];
 const LINES_PER_BATCH = 16384; // Four corners per line, 16-bit indices.
-const white = [1, 1, 1];
 const liftShadow = [21 / 255, 54 / 255, 69 / 255];
 const gridColor = [50 / 255, 92 / 255, 109 / 255];
 const rgb = hex => [1, 3, 5].map(start => parseInt(hex.slice(start, start + 2), 16) / 255);
@@ -247,6 +252,7 @@ export function createWebGlGlobe(canvas, mesh, onFailure) {
 
     const water = build(SCREEN_VERTEX, WATER, ['aPosition'], ['uDisk', 'uSize', 'uLight', 'uMid', 'uDark']);
     const land = build(LAND_VERTEX, LAND, ['aPosition'], ['uCamera', 'uPose', 'uOffset', 'uRamp', 'uColor', 'uShade']);
+    const coverage = build(MASK_VERTEX, MASK, ['aPosition'], ['uCamera', 'uPose', 'uOffset', 'uCoverage']);
     const line = build(LINE_VERTEX, LINE, ['aStart', 'aEnd', 'aCorner'], ['uCamera', 'uPose', 'uPixels', 'uReach', 'uColor']);
     const blur = build(SCREEN_VERTEX, BLUR, ['aPosition'], ['uMask', 'uKernel', 'uPairs[0]']);
     const shore = build(SCREEN_VERTEX, SHORE, ['aPosition'], ['uMask', 'uDisk', 'uSize', 'uColor', 'uChannel']);
@@ -368,24 +374,26 @@ export function createWebGlGlobe(canvas, mesh, onFailure) {
       gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
     }
 
-    function beginLand() {
-      gl.useProgram(land.program);
+    let fill = land;
+    function beginLand(program = land) {
+      fill = program;
+      gl.useProgram(fill.program);
       gl.disableVertexAttribArray(1);
       gl.disableVertexAttribArray(2);
       gl.bindBuffer(gl.ARRAY_BUFFER, mapVertices);
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mapIndices);
-      gl.uniformMatrix3fv(land.uCamera, false, matrix);
-      gl.uniform4fv(land.uPose, pose);
+      gl.uniformMatrix3fv(fill.uCamera, false, matrix);
+      gl.uniform4fv(fill.uPose, pose);
     }
 
     function offset(x = 0, y = 0, scale = 1) {
-      gl.uniform3f(land.uOffset, x * ratio * 2 / width, -y * ratio * 2 / height, scale);
+      gl.uniform3f(fill.uOffset, x * ratio * 2 / width, -y * ratio * 2 / height, scale);
     }
 
-    function tint(color, alpha, shade = color, top = 1, bottom = -1) {
+    function tint(color, alpha, shade = color, top = 1, bottom = -1, raised = 0) {
       gl.uniform4f(land.uColor, color[0], color[1], color[2], alpha);
       gl.uniform3fv(land.uShade, shade);
-      gl.uniform2f(land.uRamp, -1 / (top - bottom), top / (top - bottom));
+      gl.uniform3f(land.uRamp, -1 / (top - bottom), top / (top - bottom), raised);
     }
 
     function drawRange({ start, offset: indexOffset, count }) {
@@ -523,18 +531,18 @@ export function createWebGlGlobe(canvas, mesh, onFailure) {
       gl.disable(gl.STENCIL_TEST);
       gl.disable(gl.BLEND);
       gl.clear(gl.COLOR_BUFFER_BIT);
-      beginLand();
+      beginLand(coverage);
       offset();
       if (baseShadow) {
         gl.colorMask(true, false, false, false);
-        tint(white, 1);
+        gl.uniform1f(coverage.uCoverage, 1);
         for (let i = 0; i < continents.length; i++) drawContinent(i);
       }
       if (baseShadow && cuts.length) {
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.ZERO, gl.ONE_MINUS_SRC_ALPHA);
         for (const { range, cutOpacity } of cuts) {
-          tint(white, cutOpacity);
+          gl.uniform1f(coverage.uCoverage, cutOpacity);
           drawRange(range);
         }
         gl.disable(gl.BLEND);
@@ -545,7 +553,7 @@ export function createWebGlGlobe(canvas, mesh, onFailure) {
         gl.enable(gl.BLEND);
         for (const { range, offsetX, offsetY, scale, opacity } of lifted) {
           offset(offsetX, offsetY, scale);
-          tint(white, opacity);
+          gl.uniform1f(coverage.uCoverage, opacity);
           drawRange(range);
         }
         gl.disable(gl.BLEND);
@@ -569,9 +577,9 @@ export function createWebGlGlobe(canvas, mesh, onFailure) {
     }
 
     function drawLand(settings, cuts) {
-      beginLand();
-      offset();
       if (cuts.length) {
+        beginLand(coverage);
+        offset();
         gl.enable(gl.STENCIL_TEST);
         gl.colorMask(false, false, false, false);
         gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
@@ -583,6 +591,8 @@ export function createWebGlGlobe(canvas, mesh, onFailure) {
         gl.stencilMask(0);
         gl.stencilFunc(gl.EQUAL, 0, 255);
       }
+      beginLand();
+      offset();
       drawFaces(1);
       const borderOpacity = byteOpacity(settings.borderOpacity);
       drawLines(borders, colors.border, settings.borderWidth, borderOpacity);
@@ -612,7 +622,7 @@ export function createWebGlGlobe(canvas, mesh, onFailure) {
       for (const accent of accents) {
         const { range, offsetX = 0, offsetY = 0, scale = 1, opacity = 1, light, dark = light } = accent;
         offset(offsetX, offsetY, scale);
-        tint(light, opacity, dark, accent.rampTop ?? 1, accent.rampBottom ?? -1);
+        tint(light, opacity, dark, accent.rampTop ?? 1, accent.rampBottom ?? -1, 1);
         drawRange(range);
       }
     }

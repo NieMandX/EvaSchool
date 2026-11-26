@@ -1,5 +1,6 @@
 import { shoreGaussian } from './globe-shadow-kernel.js';
 import { createLandVisibility } from './globe-visibility.js';
+import { globeMaterial } from './globe-material.js';
 
 const SAMPLES = 4;
 const DEPTH_FORMAT = 'depth24plus-stencil8';
@@ -20,7 +21,7 @@ struct Quad { @builtin(position) clip: vec4f, @location(0) uv: vec2f }
 }
 `;
 
-const SCENE_SHADER = QUAD + /* wgsl */ `
+const SCENE_SHADER = QUAD + globeMaterial('wgsl') + /* wgsl */ `
 struct Scene {
   east: vec4f,
   north: vec4f,
@@ -39,10 +40,17 @@ struct Paint {
 @group(1) @binding(0) var blurred: texture_2d<f32>;
 @group(1) @binding(1) var linear: sampler;
 
+fn viewNormal(point: vec3f) -> vec3f {
+  return vec3f(dot(scene.east.xyz, point), dot(scene.north.xyz, point), dot(scene.front.xyz, point));
+}
+
+fn projectNormal(n: vec3f) -> vec3f {
+  let pixels = scene.view.zw + vec2f(n.x, -n.y) * scene.sphere.x * paint.transform.z + paint.transform.xy;
+  return vec3f(pixels, n.z);
+}
+
 fn screen(point: vec3f) -> vec3f {
-  let offset = vec2f(dot(scene.east.xyz, point), -dot(scene.north.xyz, point));
-  let pixels = scene.view.zw + offset * scene.sphere.x * paint.transform.z + paint.transform.xy;
-  return vec3f(pixels, dot(scene.front.xyz, point));
+  return projectNormal(viewNormal(point));
 }
 
 fn clipPosition(pixels: vec2f) -> vec4f {
@@ -62,16 +70,13 @@ fn premultiplied(rgb: vec3f, alpha: f32) -> vec4f { return vec4f(rgb * alpha, al
   let pixels = input.uv * scene.view.xy;
   let radius = scene.sphere.x;
   let radial = (pixels - scene.view.zw) / radius;
-  let edge = (1.0 - length(radial)) * min(radius * scene.sphere.y, 16384.0);
+  let depthSquared = 1.0 - dot(radial, radial);
+  let edge = 0.5 * depthSquared * min(radius * scene.sphere.y, 16384.0);
   let cover = clamp(edge + 0.5, 0.0, 1.0);
   var surface = vec4f(0.0);
   if (cover > 0.0) {
-    let shift = vec2f(0.34, 0.43);
-    let fromLight = radial + shift;
-    let b = dot(fromLight, shift) + 0.0735;
-    let gradient = clamp((sqrt(max(0.0, b * b + 0.802 * (dot(fromLight, fromLight) - 0.0049))) - b) / 0.802, 0.0, 1.0);
-    let color = select(mix(paint.dark.rgb, paint.extra.rgb, (gradient - 0.63) / 0.37),
-      mix(paint.light.rgb, paint.dark.rgb, gradient / 0.63), gradient < 0.63);
+    let n = vec3f(radial.x, -radial.y, sqrt(max(0.0, depthSquared)));
+    let color = enamel(paint.extra.rgb, paint.dark.rgb, paint.light.rgb, n);
     surface = premultiplied(color, cover);
   }
   if (cover < 1.0) {
@@ -79,26 +84,35 @@ fn premultiplied(rgb: vec3f, alpha: f32) -> vec4f { return vec4f(rgb * alpha, al
     let contact = max(0.0, 1.0 - contactDistance) * (66.0 / 255.0) * (1.0 - cover);
     surface += premultiplied(vec3f(41.0, 70.0, 84.0) / 255.0, contact);
   }
-  let rim = clamp(0.9 - abs(edge), 0.0, 1.0) * (116.0 / 255.0);
+  let rim = clamp(0.9 - abs(edge), 0.0, 1.0) * 0.18;
   return premultiplied(vec3f(66.0, 101.0, 113.0) / 255.0, rim) + surface * (1.0 - rim);
 }
 
 struct Fill {
   @builtin(position) clip: vec4f,
-  @location(0) y: f32,
+  @location(0) color: vec4f,
 }
 
-@vertex fn fill(@location(0) vertex: vec3f) -> Fill {
-  let point = screen(vertex);
+fn landClip(point: vec3f) -> vec4f {
   var clip = clipPosition(point.xy);
   // The near plane is the horizon in WebGPU clip space (0 <= z <= w).
   clip.z = point.z * 0.5;
-  return Fill(clip, point.y);
+  return clip;
+}
+
+@vertex fn silhouette(@location(0) vertex: vec3f) -> @builtin(position) vec4f {
+  return landClip(screen(vertex));
+}
+
+@vertex fn fill(@location(0) vertex: vec3f) -> Fill {
+  let n = viewNormal(vertex);
+  let base = mix(paint.light.rgb, paint.dark.rgb, clamp(0.5 - 0.5 * n.y, 0.0, 1.0));
+  let lit = porcelain(base, n, paint.transform.w);
+  return Fill(landClip(projectNormal(n)), premultiplied(lit, paint.light.a));
 }
 
 @fragment fn face(input: Fill) -> @location(0) vec4f {
-  let ramp = clamp(0.5 + (input.y - scene.view.w) / (scene.sphere.x * 1.6), 0.0, 1.0);
-  return premultiplied(mix(paint.light.rgb, paint.dark.rgb, ramp), paint.light.a);
+  return input.color;
 }
 
 @fragment fn mask() -> @location(0) vec4f {
@@ -281,13 +295,14 @@ export async function createWebGpuGlobe(canvas, mesh, onFailure) {
     function pipeline(vertex, fragment, {
       target = format, writeMask = GPUColorWrite.ALL, blend, stencil, coverage = false, shadows = false, mask = false,
     } = {}) {
-      const attributes = vertex === 'fill' ? fillAttributes : vertex === 'line' ? lineAttributes : [];
+      const polygons = vertex === 'fill' || vertex === 'silhouette';
+      const attributes = polygons ? fillAttributes : vertex === 'line' ? lineAttributes : [];
       const descriptor = {
         layout: shadows ? shadowPipeline : scenePipeline,
         vertex: { module: sceneModule, entryPoint: vertex, buffers: attributes },
         fragment: { module: sceneModule, entryPoint: fragment, targets: [{ format: target, writeMask, blend }] },
         // East × north faces the camera, so outward mesh triangles project counter-clockwise.
-        primitive: vertex === 'fill' ? { frontFace: 'ccw', cullMode: 'back' } : {},
+        primitive: polygons ? { frontFace: 'ccw', cullMode: 'back' } : {},
         multisample: { count: mask ? 1 : SAMPLES, alphaToCoverageEnabled: coverage },
       };
       if (!mask) {
@@ -310,11 +325,11 @@ export async function createWebGpuGlobe(canvas, mesh, onFailure) {
       pipeline('quad', 'shadow', { blend: OVER, shadows: true }),
       pipeline('fill', 'face', { stencil: outside }),
       pipeline('line', 'stroke', { blend: OVER, stencil: outside }),
-      pipeline('fill', 'mask', { stencil: cut, coverage: true, writeMask: 0 }),
+      pipeline('silhouette', 'mask', { stencil: cut, coverage: true, writeMask: 0 }),
       pipeline('fill', 'face', { blend: OVER }),
-      pipeline('fill', 'mask', { ...maskTarget, writeMask: GPUColorWrite.RED }),
-      pipeline('fill', 'mask', { ...maskTarget, blend: OVER, writeMask: GPUColorWrite.RED }),
-      pipeline('fill', 'mask', { ...maskTarget, blend: OVER, writeMask: GPUColorWrite.GREEN }),
+      pipeline('silhouette', 'mask', { ...maskTarget, writeMask: GPUColorWrite.RED }),
+      pipeline('silhouette', 'mask', { ...maskTarget, blend: OVER, writeMask: GPUColorWrite.RED }),
+      pipeline('silhouette', 'mask', { ...maskTarget, blend: OVER, writeMask: GPUColorWrite.GREEN }),
       device.createRenderPipelineAsync({
         layout: 'auto', vertex: { module: gaussianModule, entryPoint: 'quad' },
         fragment: { module: gaussianModule, entryPoint: 'gaussian', targets: [{ format: 'rgba8unorm' }] },
@@ -562,7 +577,7 @@ export async function createWebGpuGlobe(canvas, mesh, onFailure) {
           const range = geometry.countries.get(id) ?? geometry.countries.get(String(id));
           if (range && opacity > 0) {
             const raised = Boolean(offsetX || offsetY || scale !== 1);
-            liftedShapes.push({ range, transform: [offsetX, offsetY, scale, 0], raised, opacity: clamp01(opacity), cutOpacity: clamp01(cutOpacity), light, dark });
+            liftedShapes.push({ range, transform: [offsetX, offsetY, scale, 1], raised, opacity: clamp01(opacity), cutOpacity: clamp01(cutOpacity), light, dark });
           }
         }
         requirePaints(18 + geometry.continents.length + 4 * liftedShapes.length);
@@ -650,7 +665,9 @@ export async function createWebGpuGlobe(canvas, mesh, onFailure) {
         if (liftedShapes.length) {
           pass.setPipeline(lifted);
           bindGeometry(pass);
-          for (const { range, transform, light, dark, opacity } of liftedShapes) triangles(pass, range, paint(transform, light, dark, opacity));
+          for (const { range, transform, light, dark, opacity } of liftedShapes) {
+            triangles(pass, range, paint(transform, light, dark, opacity));
+          }
         }
         pass.end();
 
